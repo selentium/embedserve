@@ -1,0 +1,5 @@
+failure-threshold: warning
+format: tty
+
+# Keep label validation off until a Dockerfile and labeling policy are defined.
+strict-labels: false
