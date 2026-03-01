@@ -1,127 +1,112 @@
 # EmbedServe
 
-__GPU-accelerated embedding inference server with dynamic batching__
+Milestone 1 exposes the HTTP API contract for an embedding service and returns deterministic stub embeddings.
+Real model-backed transformer inference, GPU execution, batching, and model-level determinism work start in Milestone 2.
 
-A production-style self-hosted embedding service for transformer models (e.g. Qwen3-Embedding-8B), designed for:
+## Milestone 1 scope
 
-- high-throughput GPU inference
-- numerically stable outputs with best-effort repeatability within documented float tolerance
-- dynamic batching under concurrent load
-- reproducible deployments via pinned model revisions
-- Docker-ready infrastructure
+- FastAPI service with `GET /healthz`, `GET /readyz`, `GET /metrics`, and `POST /embed`
+- Structured JSON access logging with per-request `X-Request-ID`
+- Prometheus metrics with custom app metrics plus default process and Python collectors
+- Deterministic stub embeddings used to lock request and response schemas before model integration
 
+## Current behavior
 
-## Features
+`POST /embed` does not run a tokenizer or a transformer in Milestone 1.
+It hashes each input string into a fixed-size stub vector so clients can integrate against a stable contract while the real inference engine is still pending.
 
-GPU transformer inference (fp16 / bf16)
-- Model revision pinning (exact HuggingFace commit hash)
-- Numerically stable embeddings with best-effort repeatability checks
-- Dynamic batching with latency cap
-- FastAPI HTTP service
-- Prometheus metrics endpoint
-- Dockerized deployment
-- Determinism verification script
-- 10k-text benchmark script
-- 1-hour load stability test (VRAM monitoring)
+Readiness also reflects stub mode only.
+`GET /readyz` returning `{"status":"ready","mode":"stub"}` means the HTTP surface is booted, not that a model or GPU is ready.
 
 ## Determinism note
 
-This project does not claim bitwise-identical outputs across all environments.
-
-The intended contract is numerical stability with best-effort repeatability on a fixed model revision, software stack, device, and dtype. Exact thresholds, measurement method, and environment assumptions are documented alongside the determinism verification tooling.
+Milestone 1 determinism is limited to the stub implementation.
+It guarantees repeatable stub vectors for the same input within the same code version.
+Model-backed repeatability and its tolerance rules are planned for later milestones.
 
 ## Configuration
 
-All configuration via environment variables.
+All current configuration is environment-driven.
 
-### Model
-
-```
-MODEL_ID=Qwen/Qwen3-Embedding-8B
-MODEL_REVISION=<exact_commit_hash>
-DTYPE=bf16
-DEVICE=cuda:0
+```env
+MODEL_ID=stub-model
+MODEL_REVISION=milestone1-stub
+LOG_LEVEL=INFO
+MAX_INPUTS_PER_REQUEST=64
 ```
 
-### Batching
+## API
 
-```
-MAX_BATCH_SIZE=64
-MAX_BATCH_TOKENS=16384
-BATCH_TIMEOUT_MS=10
-```
+### `GET /healthz`
 
-### Tokenization
+Returns:
 
-```
-MAX_LENGTH=512
-TRUNCATE=true
+```json
+{
+  "status": "ok"
+}
 ```
 
-### Output
+### `GET /readyz`
 
+Returns:
+
+```json
+{
+  "status": "ready",
+  "mode": "stub"
+}
 ```
-NORMALIZE_EMBEDDINGS=true
-OUTPUT_DTYPE=float32
+
+### `POST /embed`
+
+Request body:
+
+```json
+{
+  "inputs": ["first text", "second text"]
+}
 ```
 
-## Dynamic batching design
+Rules:
 
+- `inputs` is required and must be a list of strings
+- Empty lists are rejected
+- Empty or whitespace-only strings are rejected
+- Extra top-level fields are rejected
+- Validation failures return FastAPI-style `422` responses
 
-The batching engine:
+Success response:
 
- - collects incoming requests
-
- - groups them until:
-
-    - batch size reached
-
-    - token budget reached
-
-    - timeout exceeded
-
- - executes single GPU forward pass
-
- - splits outputs back to original callers
-
-This dramatically improves throughput under load.
-
-
-## API  
-
- - POST /embed
- - GET /healthz
- - GET /readyz
- - GET /metrics
-
-`POST /embed` is intended to return embeddings plus response metadata including `model`, `revision`, `dim`, and `usage.tokens`.
-
-## Repo layout
-
+```json
+{
+  "data": [
+    {
+      "index": 0,
+      "embedding": [0.123456, -0.456789, 0.789012, 0.111111, -0.222222, 0.333333, -0.444444, 0.555555]
+    }
+  ],
+  "model": "stub-model",
+  "revision": "milestone1-stub",
+  "dim": 8,
+  "usage": {
+    "tokens": 0
+  }
+}
 ```
-embedserve/
-  app/
-    __init__.py
-    main.py
-    settings.py
-    schemas.py
-    logging.py
-    metrics.py
-    deps.py
-    engine/
-      __init__.py
-      model.py
-      embedder.py
-      batcher.py
-      utils.py
-  scripts/
-    verify_determinism.py
-    bench_10k.py
-    load_test.py
-  tests/
-    test_api.py
-    test_batcher.py
-  requirements.txt
-  README.md
-  .gitignore
-```
+
+Every HTTP response includes an `X-Request-ID` header.
+
+### `GET /metrics`
+
+Exposes Prometheus text format with:
+
+- `embedserve_http_requests_total`
+- `embedserve_http_request_duration_seconds`
+- `embedserve_app_ready`
+- default process and Python runtime metrics
+
+## Planned later milestones
+
+The long-term direction remains a model-backed embedding server with pinned revisions, GPU inference, and batching.
+Those capabilities are not shipped in Milestone 1 and should be treated as planned work.
