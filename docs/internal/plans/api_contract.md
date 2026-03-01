@@ -20,6 +20,7 @@
   - Validation failures use FastAPI/Pydantic-style 422 responses. Do not introduce a custom error envelope in this milestone.
   - Empty lists, empty strings, whitespace-only strings, and oversized input lists are rejected with 422.
   - Success responses include full metadata from day one: model, revision, dim, and usage.tokens.
+  - Every HTTP response includes an `X-Request-ID` header generated per request so clients can correlate logs and failures.
   - GET /readyz returns 200 in Milestone 1 once the app is booted, because readiness only reflects API availability in stub mode.
   - README wording must explicitly state that Milestone 1 exposes the API contract and stub embeddings only; it does not yet provide real model-backed inference or determinism guarantees.
 
@@ -119,6 +120,7 @@
   - No dependency on model state
   - No readiness semantics
   - Keep this endpoint trivial and stable
+  - Include `X-Request-ID` response header
 
   ### GET /readyz
 
@@ -141,6 +143,7 @@
   - Always returns 200 once the app is successfully booted
   - Do not pretend GPU or model readiness exists yet
   - The mode: "stub" field is important so operators and tests can distinguish contract-ready from model-ready behavior
+  - Include `X-Request-ID` response header
 
   ### GET /metrics
 
@@ -159,6 +162,7 @@
   - Use a single registry per app instance
   - Expose custom metrics and default collectors from the same registry
   - Ensure tests can instantiate the app multiple times without duplicate collector registration issues
+  - Include `X-Request-ID` response header
 
   ### POST /embed
 
@@ -192,6 +196,7 @@
   - Reject list longer than MAX_INPUTS_PER_REQUEST with 422
   - Reject mixed-validity payloads with 422
   - Reject unknown fields with 422
+  - Validation is trim-aware only for deciding whether a string is blank; accepted inputs are not trimmed, normalized, or otherwise modified before embedding
 
   #### Success response schema
 
@@ -226,6 +231,7 @@
   - usage.tokens is always 0 in Milestone 1 because tokenization does not exist yet
   - model and revision come from settings
   - dim comes from the stub embedder constant
+  - Include `X-Request-ID` response header
 
   #### Validation failure response
 
@@ -248,6 +254,7 @@
   - Do not add a project-specific error envelope
   - For env-driven max-input validation, preserve the same top-level detail list contract even if the check is performed outside the base Pydantic field definition
   - Do not return partial-success bodies
+  - Include `X-Request-ID` response header
 
   ## Internal Types and Interfaces
 
@@ -257,6 +264,7 @@
       - inputs: list[str]
       - extra = "forbid"
       - validator rejects blank/whitespace-only items
+      - validator must not mutate accepted strings
   - EmbeddingItem
       - index: int
       - embedding: list[float]
@@ -408,6 +416,7 @@
   Rules:
 
   - Generate a request ID per HTTP request in middleware
+  - Return the request ID to clients via the `X-Request-ID` response header on success and error paths
   - Emit one access log entry per request
   - Include exceptions in JSON logs for unhandled server errors
   - Disable or avoid duplicate default Uvicorn access logs if they conflict with custom structured logs
@@ -470,11 +479,13 @@
 
   - GET /healthz returns 200 and {"status":"ok"}
   - GET /readyz returns 200 and {"status":"ready","mode":"stub"}
+  - Both endpoints include `X-Request-ID`
 
   ### Metrics
 
   - GET /metrics returns 200
   - Response content type is Prometheus-compatible
+  - Response includes `X-Request-ID`
   - Response body contains:
       - embedserve_http_requests_total
       - embedserve_http_request_duration_seconds
@@ -485,11 +496,13 @@
 
   - Single valid input returns 200
   - Multi-input request returns 200
+  - Response includes `X-Request-ID`
   - data preserves request order
   - data[i].index == i
   - Every embedding length equals dim
   - Top-level model, revision, dim, and usage.tokens are present
   - Repeating the same request twice returns identical stub embeddings
+  - A non-blank input with surrounding whitespace is accepted and embedded without trimming or normalization
 
   ### Embed validation
 
@@ -500,6 +513,7 @@
   - Whitespace-only item returns 422
   - Extra top-level field returns 422
   - Mixed-validity list returns 422
+  - Validation failures include `X-Request-ID`
 
   ### Config-driven input cap
 
@@ -541,10 +555,12 @@
   - Success responses use 200 OK
   - Validation is full-request rejection, not partial success
   - Validation failures use FastAPI/Pydantic-style 422
+  - Every HTTP response includes `X-Request-ID`
   - MAX_INPUTS_PER_REQUEST is public config in Milestone 1
   - Default MAX_INPUTS_PER_REQUEST is 64
   - Default MODEL_ID is stub-model
   - Default MODEL_REVISION is milestone1-stub
   - Stub embedding dimension is 8
   - usage.tokens is always 0 until tokenizer work exists
+  - Whitespace handling is validation-only; accepted inputs are embedded exactly as provided
   - Readiness in Milestone 1 means “HTTP contract is up in stub mode,” not “model is loaded”
