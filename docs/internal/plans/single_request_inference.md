@@ -504,16 +504,42 @@
 
   ## Implementation Sequence
 
-  1. Extend Settings with DEVICE, DTYPE, MAX_LENGTH, TRUNCATE, NORMALIZE_EMBEDDINGS, and OUTPUT_DTYPE.
-  2. Add ready and unready response schemas and a runtime-state dataclass.
-  3. Replace StubEmbedder with TransformerEmbedder.
-  4. Add startup initialization helper and warmup path.
-  5. Update /readyz and /embed to use runtime state.
-  6. Update readiness metric handling from stub-mode to model-mode.
-  7. Update tests to cover real-inference semantics through fakes and monkeypatching.
-  8. Update README.md to document the new config surface, ready/unready behavior, truncation semantics, and the limited determinism claim.
-  9. Update route metadata/OpenAPI so documented 200 and 503 responses match runtime behavior.
-  10. Keep requirements unpinned in the same style as the current repo, but add torch and transformers. Version pinning remains a Milestone 5 responsibility.
+  The order matters because the current codebase creates settings and runtime state inside lifespan, imports the embedder from app.main/app.deps, and the default test suite constructs TestClient(create_app()) with no network or GPU assumptions.
+
+  Recommended order:
+
+  1. Add the runtime-state module and dependency seam first.
+      - Introduce app/runtime.py and a get_runtime dependency
+      - Move app.state.embedder toward app.state.runtime so routes can branch on readiness without requiring an embedder object to exist
+      - Keep existing stub behavior temporarily while this seam lands
+  2. Update metrics helpers so model-mode readiness can be represented as both 0 and 1 before changing startup behavior.
+      - Initialize embedserve_app_ready{mode="model"} to 0 during startup
+      - Add or replace helpers so unready state is exported explicitly, not only the ready case
+  3. Add startup-initialization helper boundaries before replacing the embedder implementation.
+      - Keep model/tokenizer construction behind a narrow loader or initializer function
+      - Make that helper injectable or monkeypatchable from tests
+      - Defer torch/transformers imports to the runtime-initialization path so missing dependencies behave as startup failures rather than surprising module-import failures
+  4. Extend Settings with DEVICE, DTYPE, MAX_LENGTH, TRUNCATE, NORMALIZE_EMBEDDINGS, OUTPUT_DTYPE, and strict MODEL_REVISION validation.
+      - Do this after the test seam exists so the suite does not accidentally start downloading models or require GPU/online setup just from default startup
+  5. Add ready and unready response schemas and update route wiring to use runtime state.
+      - Update /readyz to return 200 or 503 from runtime state
+      - Update /embed to preserve request-shape validation and MAX_INPUTS_PER_REQUEST checks before readiness checks
+      - Remove route-time assumptions that app.state.embedder is always present
+  6. Replace StubEmbedder with TransformerEmbedder behind the loader/helper seam.
+      - Keep the synchronous embedder API
+      - Add the process-local inference lock
+      - Implement tokenization, forward, pooling, normalization, and output conversion
+  7. Add guarded startup initialization and mandatory warmup.
+      - Build tokenizer/model through the helper
+      - Validate device/dtype compatibility
+      - Run warmup
+      - Store either ready runtime with embedder or unready runtime with reason/detail
+  8. Update logging so startup initialization events actually emit the planned structured fields.
+  9. Update tests to cover ready and unready startup, tokenizer behavior, /embed 503 behavior, and OpenAPI response metadata through fakes and monkeypatching.
+      - This should happen before changing the documented default model config used in examples
+  10. Update route metadata/OpenAPI so documented 200 and 503 responses match runtime behavior.
+  11. Update README.md to document the new config surface, ready/unready behavior, truncation semantics, and the limited determinism claim.
+  12. Keep requirements unpinned in the same style as the current repo, but add torch and transformers. Version pinning remains a Milestone 5 responsibility.
 
   ## Test Plan
 
