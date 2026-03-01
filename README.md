@@ -84,8 +84,8 @@ This dramatically improves throughput under load.
 ## API  
 
  - POST /embed
- - GET /health
- - GET /ready
+ - GET /healthz
+ - GET /readyz
  - GET /metrics
 
 ## Repo layout
