@@ -14,6 +14,7 @@
   - Use transformers plus torch directly. Do not add the sentence-transformers package in this milestone.
   - Pooling is fixed to attention-mask-aware mean pooling. It is not configurable in Milestone 2.
   - The process boots even if model or device initialization fails.
+  - Missing required runtime dependencies such as torch or transformers is a hard startup failure, not an unready state.
   - GET /healthz remains a pure liveness endpoint and still returns 200.
   - GET /readyz becomes a true readiness endpoint and returns 503 when the model runtime is not ready.
   - POST /embed returns 503 while the service is unready. Do not fall back to stub embeddings.
@@ -102,6 +103,8 @@
       - Examples: invalid boolean, invalid enum string, MAX_LENGTH < 1, MAX_INPUTS_PER_REQUEST < 1, MODEL_REVISION not matching a full 40-character hexadecimal commit hash
   - Runtime-dependent validation marks the service unready instead of crashing startup.
       - Examples: unavailable CUDA device, unsupported dtype/device combo, model load failure, tokenizer/model incompatibility
+  - Missing required Python dependencies still fails startup immediately.
+      - Examples: ImportError for torch or transformers
 
   ### Default model assumption
 
@@ -150,6 +153,8 @@
 
   Rules:
 
+  - reason is a closed enum, not a free-form string
+  - Allowed reason values: initialization_failed, device_unavailable, dtype_unsupported, model_load_failed, tokenizer_incompatible, warmup_failed
   - detail should be a short sanitized message, not a traceback dump
   - Full exception details go to logs only
   - mode should be model for both ready and unready cases
@@ -219,7 +224,9 @@
 
   If TRUNCATE=false:
 
-  - Tokenize first without truncation for length checking
+  - Perform a length-check pass before padded batch construction and before model forward
+  - The length-check path should avoid large padded tensor allocation for obviously oversize inputs
+  - It may inspect items individually or use tokenizer facilities that return lengths without creating model inputs
   - If any input would exceed the effective max length after special tokens are added, reject the whole request with 422
   - Error location should point to the offending item when possible: ["body", "inputs", <index>]
   - Error message should include both actual token length and limit
@@ -359,6 +366,11 @@
       - keep readiness gauge at 0
       - log one structured initialization-failure event with traceback
 
+  Dependency loading rule:
+
+  - ImportError for required runtime packages such as torch or transformers aborts startup immediately
+  - Initialization failures that happen after required imports succeed transition the service to unready runtime state instead
+
   Warmup is mandatory. Readiness should not mean “weights downloaded” only; it should mean the actual tokenization plus forward path works.
   First successful startup may download model artifacts from Hugging Face if they are not already cached.
 
@@ -374,14 +386,17 @@
   - read runtime state
   - return 200 with ready schema if runtime.ready
   - return 503 with unready schema otherwise
+  - document both 200 and 503 responses in route metadata/OpenAPI, not just in prose
 
   POST /embed
 
   - validate request body as today
   - enforce MAX_INPUTS_PER_REQUEST
+  - preserve Milestone 1 validation precedence: malformed or oversized payloads still return 422 even if runtime.ready is false
   - short-circuit with 503 if runtime.ready is false
   - execute model inference through the embedder
   - preserve response ordering and metadata shape
+  - document the 503 response in route metadata/OpenAPI
 
   ## Concurrency policy
 
@@ -448,13 +463,16 @@
 
   - DEVICE=cuda or cuda:N but CUDA is unavailable: boot unready
   - DTYPE=float16 or bfloat16 on unsupported hardware: boot unready
+  - torch or transformers cannot be imported: fail startup immediately
   - MODEL_REVISION is not a full 40-character hexadecimal commit hash: fail settings validation and abort startup
   - MODEL_ID exists but MODEL_REVISION does not resolve: boot unready
   - tokenizer loads but model forward output has no last_hidden_state: boot unready
   - tokenizer cannot produce padded batched inputs cleanly: boot unready
   - TRUNCATE=false and one item exceeds max length: reject the entire request with 422
+  - TRUNCATE=false length checking must not allocate large padded model-input tensors before rejection
   - TRUNCATE=true and only some items exceed max length: truncate only those items and succeed
   - MAX_INPUTS_PER_REQUEST still applies before inference
+  - request validation errors keep returning 422 even when the runtime is unready
   - blank-string validation remains trim-aware for rejection only; accepted strings are not modified
   - usage.tokens must be deterministic for the same tokenizer settings and request payload
   - normalization must not produce NaNs
@@ -473,7 +491,8 @@
   6. Update readiness metric handling from stub-mode to model-mode.
   7. Update tests to cover real-inference semantics through fakes and monkeypatching.
   8. Update README.md to document the new config surface, ready/unready behavior, truncation semantics, and the limited determinism claim.
-  9. Keep requirements unpinned in the same style as the current repo, but add torch and transformers. Version pinning remains a Milestone 5 responsibility.
+  9. Update route metadata/OpenAPI so documented 200 and 503 responses match runtime behavior.
+  10. Keep requirements unpinned in the same style as the current repo, but add torch and transformers. Version pinning remains a Milestone 5 responsibility.
 
   ## Test Plan
 
@@ -494,8 +513,9 @@
   - ready runtime returns 200
   - ready body includes status, mode, model, revision, device, dtype
   - failed initialization returns 503
-  - unready body includes reason and short detail
+  - unready body includes reason enum value and short detail
   - both paths include X-Request-ID
+  - OpenAPI advertises both the 200 and 503 readiness responses
 
   ### /embed success tests
 
@@ -512,10 +532,12 @@
   ### /embed failure tests
 
   - unready runtime returns 503
+  - malformed payloads still return 422 when runtime is unready
   - TRUNCATE=false and overlength input returns 422
   - TRUNCATE=false failure points to offending input index
   - over-input-count behavior from Milestone 1 still returns 422
   - all error paths preserve X-Request-ID
+  - OpenAPI advertises the 503 /embed response
 
   ### Tokenization behavior tests
 
@@ -523,6 +545,7 @@
 
   - truncation enabled shortens long sequences to effective max length
   - truncation disabled rejects long sequences before model forward
+  - truncation disabled length checking does not create padded batch model inputs for oversized requests
   - usage.tokens uses post-truncation lengths, not pre-truncation lengths
   - effective max length respects both configured MAX_LENGTH and tokenizer cap
   - padding tokens are excluded from mean pooling and token counts
