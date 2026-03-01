@@ -147,7 +147,7 @@
     "revision": "EXACT_COMMIT_HASH",
     "device": "cuda:0",
     "dtype": "float16",
-    "reason": "initialization_failed",
+    "reason": "device_unavailable",
     "detail": "CUDA device cuda:0 is not available"
   }
 
@@ -155,6 +155,13 @@
 
   - reason is a closed enum, not a free-form string
   - Allowed reason values: initialization_failed, device_unavailable, dtype_unsupported, model_load_failed, tokenizer_incompatible, warmup_failed
+  - Public reason values should map from internal failures as follows:
+      - device selection or CUDA availability failures -> device_unavailable
+      - unsupported DEVICE plus DTYPE combinations -> dtype_unsupported
+      - Hugging Face download, revision resolution, or model construction failures -> model_load_failed
+      - tokenizer construction failures or tokenizer/model input-shape incompatibilities -> tokenizer_incompatible
+      - warmup tokenization or warmup forward-pass failures after successful construction -> warmup_failed
+      - use initialization_failed only for unexpected runtime-initialization failures that do not fit the narrower categories
   - detail should be a short sanitized message, not a traceback dump
   - Full exception details go to logs only
   - mode should be model for both ready and unready cases
@@ -202,6 +209,14 @@
 
   Do not introduce a custom error envelope for this path.
 
+  Validation precedence clarification:
+
+  - Preserve Milestone 1 precedence for request-shape validation and MAX_INPUTS_PER_REQUEST only
+  - Schema validation failures and over-input-count failures still return 422 even when runtime.ready is false
+  - Tokenizer-dependent validation such as TRUNCATE=false overlength checks runs only when runtime.ready is true
+  - If runtime.ready is false, do not attempt tokenizer-backed length checks just to decide between 422 and 503
+  - This avoids requiring a usable tokenizer or embedder in the unready state
+
   ## Tokenization and Inference Semantics
 
   ### Effective max length
@@ -230,6 +245,7 @@
   - If any input would exceed the effective max length after special tokens are added, reject the whole request with 422
   - Error location should point to the offending item when possible: ["body", "inputs", <index>]
   - Error message should include both actual token length and limit
+  - Raise RequestValidationError so the response stays in the existing FastAPI 422 shape instead of introducing a custom error body
 
   ### Pooling
 
@@ -392,7 +408,7 @@
 
   - validate request body as today
   - enforce MAX_INPUTS_PER_REQUEST
-  - preserve Milestone 1 validation precedence: malformed or oversized payloads still return 422 even if runtime.ready is false
+  - preserve Milestone 1 validation precedence for malformed payloads and over-input-count payloads: those still return 422 even if runtime.ready is false
   - short-circuit with 503 if runtime.ready is false
   - execute model inference through the embedder
   - preserve response ordering and metadata shape
@@ -402,7 +418,7 @@
 
   Milestone 2 is single-request inference only, so correctness should win over throughput.
 
-  - Serialize inference with a single lock inside the embedder
+  - Serialize inference with a single process-local threading.Lock or equivalent thread-safe synchronous lock inside the embedder
   - Tokenization, forward pass, pooling, normalization, and output conversion should all occur under that lock
   - Do not attempt concurrent forwards on the same shared model instance yet
   - Do not implement request merging or micro-batching
@@ -435,6 +451,10 @@
   ## Logging
 
   Add structured startup events in addition to the existing access logs.
+
+  Implementation note:
+
+  - app/logging.py must be updated so these startup fields are actually emitted by the JSON formatter; the current formatter only includes a small fixed field set plus exception details
 
   Initialization success log fields:
 
@@ -473,6 +493,7 @@
   - TRUNCATE=true and only some items exceed max length: truncate only those items and succeed
   - MAX_INPUTS_PER_REQUEST still applies before inference
   - request validation errors keep returning 422 even when the runtime is unready
+  - this 422-before-503 rule applies only to request-shape validation and MAX_INPUTS_PER_REQUEST, not tokenizer-dependent overlength checks
   - blank-string validation remains trim-aware for rejection only; accepted strings are not modified
   - usage.tokens must be deterministic for the same tokenizer settings and request payload
   - normalization must not produce NaNs
