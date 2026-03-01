@@ -1,11 +1,11 @@
 # EmbedServe
 
-__Deterministic, GPU-accelerated embedding inference server with dynamic batching__
+__GPU-accelerated embedding inference server with dynamic batching__
 
 A production-style self-hosted embedding service for transformer models (e.g. Qwen3-Embedding-8B), designed for:
 
 - high-throughput GPU inference
-- numerically stable outputs
+- numerically stable outputs with best-effort repeatability within documented float tolerance
 - dynamic batching under concurrent load
 - reproducible deployments via pinned model revisions
 - Docker-ready infrastructure
@@ -15,7 +15,7 @@ A production-style self-hosted embedding service for transformer models (e.g. Qw
 
 GPU transformer inference (fp16 / bf16)
 - Model revision pinning (exact HuggingFace commit hash)
-- Numerically stable embeddings (repeatable within float tolerance)
+- Numerically stable embeddings with best-effort repeatability checks
 - Dynamic batching with latency cap
 - FastAPI HTTP service
 - Prometheus metrics endpoint
@@ -23,6 +23,12 @@ GPU transformer inference (fp16 / bf16)
 - Determinism verification script
 - 10k-text benchmark script
 - 1-hour load stability test (VRAM monitoring)
+
+## Determinism note
+
+This project does not claim bitwise-identical outputs across all environments.
+
+The intended contract is numerical stability with best-effort repeatability on a fixed model revision, software stack, device, and dtype. Exact thresholds, measurement method, and environment assumptions are documented alongside the determinism verification tooling.
 
 ## Configuration
 
@@ -87,6 +93,8 @@ This dramatically improves throughput under load.
  - GET /healthz
  - GET /readyz
  - GET /metrics
+
+`POST /embed` is intended to return embeddings plus response metadata including `model`, `revision`, `dim`, and `usage.tokens`.
 
 ## Repo layout
 

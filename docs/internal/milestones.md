@@ -20,8 +20,11 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 
 - Whether `/embed` accepts a single string, a list of strings, or both.
 - Stable response shape for success and validation failure.
+- Output ordering guarantees for multi-input requests.
+- Behavior for empty input, oversized input lists, and mixed-validity payloads.
 - Whether response metadata includes `model`, `revision`, `dim`, and `usage.tokens`.
 - Initial readiness policy before model load exists.
+- Temporary README wording for inference and determinism claims until real model-backed responses exist.
 
 ### Acceptance checks
 
@@ -41,9 +44,9 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 - Hugging Face model and tokenizer loading with `MODEL_ID` and `MODEL_REVISION`.
 - Device and dtype configuration through `DEVICE` and `DTYPE`.
 - Tokenization settings through `MAX_LENGTH` and `TRUNCATE`.
-- Embedding pipeline covering tokenization, forward pass, pooling, optional L2 normalization, and output dtype conversion.
+- Embedding pipeline covering tokenization, forward pass, pooling, L2 normalization controlled by `NORMALIZE_EMBEDDINGS`, and output dtype conversion controlled by `OUTPUT_DTYPE`.
 - `/readyz` reflects model load state and device availability.
-- Unit coverage for tokenization limits, truncation behavior, and response metadata.
+- Unit coverage for tokenization limits, truncation behavior, normalization, output dtype conversion, and response metadata.
 
 ### Required API decisions
 
@@ -51,6 +54,7 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 - Maximum supported input count per request.
 - Behavior when inputs exceed `MAX_LENGTH`.
 - Behavior when model load fails at startup.
+- Whether `NORMALIZE_EMBEDDINGS` and `OUTPUT_DTYPE` are part of the stable public config surface.
 
 ### Acceptance checks
 
@@ -58,6 +62,7 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 - Response includes `model`, `revision`, `dim`, and `usage.tokens`.
 - `MODEL_REVISION` accepts an exact commit hash and is surfaced in the response.
 - `MAX_LENGTH` and `TRUNCATE` behavior is covered by automated tests.
+- `NORMALIZE_EMBEDDINGS` and `OUTPUT_DTYPE` are exercised by automated tests and documented in README.
 - `/readyz` returns non-ready status when model initialization fails or target device is unavailable.
 
 ## Milestone 3 - Determinism policy and verification
@@ -68,6 +73,7 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 
 - Best-effort determinism settings documented in code and README.
 - Explicit policy that distinguishes numerical stability from bitwise determinism.
+- README title and feature wording updated so public claims exactly match the enforced policy.
 - `scripts/verify_determinism.py` sends the same inputs repeatedly, reports `max_abs_diff` and `min_cosine_similarity`, accepts configurable thresholds and iteration count, and exits non-zero on threshold failure.
 - README section that states exactly what is guaranteed and under which environment assumptions.
 
@@ -87,7 +93,7 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 - Async batching engine with request queue, background worker, batch assembly, and response fan-out to original callers.
 - Batching constraints driven by `MAX_BATCH_SIZE`, `MAX_BATCH_TOKENS`, and `BATCH_TIMEOUT_MS`.
 - Request-level timeout and cancellation handling.
-- Defined overload policy with queue size limit and explicit rejection behavior.
+- Defined overload policy with queue size limit, explicit rejection behavior, and either documented fixed defaults or a documented public config surface for the queueing controls.
 - Metrics for queue depth, queue wait time, batch size, batch token count, flush reason, and overload rejections.
 - Tests for request ordering, timeouts, cancellation, and split-output correctness.
 
@@ -96,10 +102,11 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 - HTTP status and response body for overload rejection.
 - Whether callers can provide per-request timeout hints.
 - Whether batching is optional or always on once enabled.
+- Whether queue capacity and request timeout are configurable, and if so which environment variables define them.
 
 ### Acceptance checks
 
-- Under concurrent load, batching produces higher throughput than the no-batching path using the same model and hardware.
+- Under a documented local harness with fixed hardware, model, revision, concurrency, input shape, warmup policy, and batching settings, the batching path produces at least one larger-than-singleton batch and preserves per-request semantics.
 - `/metrics` shows non-zero batching counters and histograms during the test.
 - Requests are either served correctly or rejected according to the documented overload policy.
 - No caller receives another request's output.
@@ -133,6 +140,7 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 
 - `scripts/bench_10k.py` sends a configurable number of texts, reports throughput, reports p50, p95, and p99 client-side latency, and records error count and timeout count.
 - Benchmark report in `BENCHMARK.md` or README includes hardware used, model and revision, dtype, batching settings, tokenization settings, concurrency level, and a results table.
+- Benchmark method explicitly defines warmup procedure, input corpus shape, and the no-batching comparison mode if throughput deltas are reported.
 
 ### Acceptance checks
 
