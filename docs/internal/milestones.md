@@ -1,201 +1,170 @@
-# Milestone 1 — Repo bootstrap + runnable API skeleton
+# Milestones
 
-*Goal:* service starts and responds, even before GPU/model work is perfect.
+This roadmap is derived from the product contract in `README.md`.
+Each milestone should leave the repository in a usable state with clear pass/fail checks.
 
-### Deliverables
+## Milestone 1 - Repo bootstrap and API contract
 
- - Repo layout in place (app/, docker/, scripts/, tests/)
-
- - FastAPI app with:
-
-    - GET /healthz, GET /readyz, GET /metrics
-
-    - POST /embed (stub or minimal embedding path)
-
- - Logging + settings via env vars
-
- - Basic pytest smoke tests (/healthz, /embed)
-
-
-### Acceptance checks
-
- - uvicorn app.main:app runs locally
-
- - /metrics returns Prometheus text format
-
-
-
-
-
-# Milestone 2 — Model loading + revision pinning + single-request embeddings
-
-*Goal:* real embeddings from a pinned HF revision.
-
+*Goal:* the service starts locally, exposes the public endpoints, and has a stable API contract before GPU work begins.
 
 ### Deliverables
 
- - HF model + tokenizer loading with:
+- Repository layout in place for `app/`, `scripts/`, `tests/`, and `docker/`.
+- FastAPI app with `GET /healthz`, `GET /readyz`, `GET /metrics`, and `POST /embed`.
+- Initial request and response schemas for `/embed`, including validation errors.
+- Environment-driven settings and structured logging.
+- Basic Prometheus instrumentation for request count, request latency, and process health.
+- Smoke tests for `/healthz`, `/readyz`, `/metrics`, and `/embed`.
 
-    - MODEL_ID, MODEL_REVISION (exact hash supported)
+### Required API decisions
 
-    - DTYPE (bf16/fp16) + DEVICE (cuda:0)
-
- - Embedding pipeline:
-
-    - tokenization
-
-    - pooling (mean pooling baseline)
-
-    - optional normalization (L2)
-
-    - output dtype control (float32)
-
- - /readyz checks model loaded + device available
-
-
+- Whether `/embed` accepts a single string, a list of strings, or both.
+- Stable response shape for success and validation failure.
+- Whether response metadata includes `model`, `revision`, `dim`, and `usage.tokens`.
+- Initial readiness policy before model load exists.
 
 ### Acceptance checks
 
- - POST /embed returns vectors with correct dimension
+- `uvicorn app.main:app` starts locally with documented environment variables only.
+- `GET /healthz` returns `200`.
+- `GET /readyz` returns a documented status that matches current initialization state.
+- `GET /metrics` returns valid Prometheus text exposition.
+- `POST /embed` returns either a stub response matching the final schema or a documented `501` placeholder.
+- Pytest smoke suite passes locally.
 
- - Response includes model, revision, dim, usage.tokens
+## Milestone 2 - Model loading, tokenization, and single-request inference
 
-
-
-
-
-
-# Milestone 3 — Determinism controls + verification script
-
-*Goal:* “deterministic” claim is backed by a script + documented policy.
+*Goal:* real embeddings are returned from a pinned Hugging Face model revision on a specific device.
 
 ### Deliverables
 
- - Determinism flags + seeding (best-effort)
+- Hugging Face model and tokenizer loading with `MODEL_ID` and `MODEL_REVISION`.
+- Device and dtype configuration through `DEVICE` and `DTYPE`.
+- Tokenization settings through `MAX_LENGTH` and `TRUNCATE`.
+- Embedding pipeline covering tokenization, forward pass, pooling, optional L2 normalization, and output dtype conversion.
+- `/readyz` reflects model load state and device availability.
+- Unit coverage for tokenization limits, truncation behavior, and response metadata.
 
- - scripts/verify_determinism.py:
+### Required API decisions
 
-    - repeats same inputs N times
-
-    - reports max_abs_diff + min_cosine
-
-    - prints pass/fail thresholds (configurable)
-
- - README section: “Numerical stability vs bitwise determinism” + what you guarantee
+- Default pooling algorithm and whether it is configurable.
+- Maximum supported input count per request.
+- Behavior when inputs exceed `MAX_LENGTH`.
+- Behavior when model load fails at startup.
 
 ### Acceptance checks
 
-Script runs against server and produces stable results within tolerance (on your setup)
+- `POST /embed` returns vectors with the expected embedding dimension for the configured model.
+- Response includes `model`, `revision`, `dim`, and `usage.tokens`.
+- `MODEL_REVISION` accepts an exact commit hash and is surfaced in the response.
+- `MAX_LENGTH` and `TRUNCATE` behavior is covered by automated tests.
+- `/readyz` returns non-ready status when model initialization fails or target device is unavailable.
 
+## Milestone 3 - Determinism policy and verification
 
-
-# Milestone 4 — Dynamic batching v1 (queue + worker + latency cap)
-
-*Goal:* concurrent requests get merged into GPU batches.
+*Goal:* the determinism claim is narrowed to something measurable and enforced by tooling.
 
 ### Deliverables
 
- - Async batching engine:
-
-    - request queue
-
-    - batch assembly loop
-
-    - constraints: MAX_BATCH_SIZE, MAX_BATCH_TOKENS, BATCH_TIMEOUT_MS
-
-    - splits outputs back to callers
-
- - Metrics hooks for batching:
-
-    - queue depth, queue wait
-
-    - batch size/tokens
-
-    - flush reasons
+- Best-effort determinism settings documented in code and README.
+- Explicit policy that distinguishes numerical stability from bitwise determinism.
+- `scripts/verify_determinism.py` sends the same inputs repeatedly, reports `max_abs_diff` and `min_cosine_similarity`, accepts configurable thresholds and iteration count, and exits non-zero on threshold failure.
+- README section that states exactly what is guaranteed and under which environment assumptions.
 
 ### Acceptance checks
 
- - Under concurrency (e.g. 32 clients), throughput improves vs no batching
+- Verification script runs against a live server.
+- Default thresholds are documented and checked automatically.
+- Script exits `0` on a known-good setup and non-zero when thresholds are intentionally violated.
+- README documents the exact limits of the determinism claim.
 
- - /metrics shows non-zero batching counters/histograms
+## Milestone 4 - Dynamic batching v1
 
-
-# Milestone 5 — Docker GPU deployment (reproducible run)
-
-*Goal:* “one command” deployment.
+*Goal:* concurrent requests are merged into larger GPU batches without breaking per-request semantics.
 
 ### Deliverables
 
- - docker/Dockerfile (CUDA base image)
+- Async batching engine with request queue, background worker, batch assembly, and response fan-out to original callers.
+- Batching constraints driven by `MAX_BATCH_SIZE`, `MAX_BATCH_TOKENS`, and `BATCH_TIMEOUT_MS`.
+- Request-level timeout and cancellation handling.
+- Defined overload policy with queue size limit and explicit rejection behavior.
+- Metrics for queue depth, queue wait time, batch size, batch token count, flush reason, and overload rejections.
+- Tests for request ordering, timeouts, cancellation, and split-output correctness.
 
- - docker/docker-compose.yml GPU-enabled
+### Required API decisions
 
- - README quickstart:
-
-    - docker build + docker run --gpus all
-
-    - compose run instructions
-
- - Healthcheck notes
+- HTTP status and response body for overload rejection.
+- Whether callers can provide per-request timeout hints.
+- Whether batching is optional or always on once enabled.
 
 ### Acceptance checks
 
-Fresh machine (or clean environment) can run the service in Docker and hit /embed
+- Under concurrent load, batching produces higher throughput than the no-batching path using the same model and hardware.
+- `/metrics` shows non-zero batching counters and histograms during the test.
+- Requests are either served correctly or rejected according to the documented overload policy.
+- No caller receives another request's output.
+- Automated tests cover timeout, cancellation, and queue saturation cases.
 
+## Milestone 5 - Dockerized reproducible deployment
 
-
-# Milestone 6 — Benchmark suite (10k test + latency/throughput report)
-
-*Goal:* measurable performance numbers with a repeatable script.
+*Goal:* the service can be run on a clean machine with a reproducible software stack.
 
 ### Deliverables
 
- - scripts/bench_10k.py:
-
-    - sends N texts
-
-    - reports throughput + p50/p95 latency (client-side)
-
- - BENCHMARK.md (or README section):
-
-    - hardware specs used
-
-    - settings used (batch sizes, dtype, max tokens)
-
-    - results table
+- `docker/Dockerfile` based on a pinned CUDA runtime image.
+- `docker/docker-compose.yml` or equivalent local GPU run configuration.
+- Pinned Python dependency set suitable for reproducible rebuilds.
+- README quickstart for local Docker build and GPU run.
+- Healthcheck configuration and startup notes for model warmup.
+- Documented expectations for NVIDIA runtime, driver, and container toolkit.
 
 ### Acceptance checks
 
- - bench_10k.py completes and prints a consistent report
+- A clean environment can build the image and start the service with documented steps only.
+- Containerized service answers `POST /embed` successfully on GPU.
+- Docker artifacts pin enough of the stack to reproduce the runtime environment across rebuilds.
+- README documents required host prerequisites and known non-portable pieces.
 
- - You can reproduce results with same config
+## Milestone 6 - Benchmark suite and performance report
 
-
-
-# Milestone 7 — 1-hour stability test + memory monitoring
-
-*Goal:* prove no VRAM creep / stability under sustained load.
+*Goal:* performance can be measured and compared using a repeatable script and a fixed reporting format.
 
 ### Deliverables
 
- - scripts/load_test.py:
-
-    - sustained concurrency for duration
-
-    - periodic metrics sampling (from /metrics and/or torch.cuda)
-
- - Add GPU memory metrics:
-
-    - allocated/reserved bytes gauges
-
-    - OOM counter
-
- - A “Stability Results” section with your run summary
+- `scripts/bench_10k.py` sends a configurable number of texts, reports throughput, reports p50, p95, and p99 client-side latency, and records error count and timeout count.
+- Benchmark report in `BENCHMARK.md` or README includes hardware used, model and revision, dtype, batching settings, tokenization settings, concurrency level, and a results table.
 
 ### Acceptance checks
 
- - 1-hour run completes without crashes
+- Benchmark script completes successfully against a live server and prints a machine-readable summary.
+- The report format is stable enough to compare runs across commits.
+- Running the benchmark twice with the same config produces results within a documented variance band.
+- Report clearly states whether numbers were collected with warm cache, warm model, and warm container.
 
- - VRAM doesn’t monotonically grow beyond small tolerance
+## Milestone 7 - One-hour stability and memory monitoring
 
- - No unhandled exceptions under load
+*Goal:* sustained load does not cause crashes, runaway memory growth, or silent failure.
+
+### Deliverables
+
+- `scripts/load_test.py` for sustained configurable concurrency and duration.
+- GPU memory metrics for allocated bytes, reserved bytes, and OOM count.
+- Request failure metrics for timeout, overload rejection, and internal error.
+- Stability report section includes test duration, concurrency level, request volume, error summary, VRAM trend summary, and known caveats.
+
+### Acceptance checks
+
+- A 1-hour run completes without process crash.
+- No unhandled exceptions are emitted under sustained load.
+- OOM count remains `0` for the documented test configuration.
+- VRAM usage does not show unbounded monotonic growth; acceptable drift threshold is documented in the report.
+- Final report includes enough detail to reproduce the run conditions.
+
+## Cross-cutting rules
+
+These apply to every milestone after the relevant capability exists.
+
+- New public behavior must be covered by automated tests.
+- README must stay aligned with the actual product contract.
+- Metrics names and labels should be treated as a compatibility surface once documented.
+- Every operational claim in README should map to a measurable check in this roadmap.
