@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.readiness import ReadyReason
+
 
 class EmbedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -42,4 +44,19 @@ class HealthResponse(BaseModel):
 
 class ReadyResponse(BaseModel):
     status: Literal["ready"]
-    mode: Literal["stub"]
+    mode: Literal["model"]
+    model: str
+    revision: str
+    device: str
+    dtype: str
+
+
+class NotReadyResponse(BaseModel):
+    status: Literal["not_ready"]
+    mode: Literal["model"]
+    model: str
+    revision: str
+    device: str
+    dtype: str
+    reason: ReadyReason
+    detail: str

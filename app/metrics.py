@@ -86,8 +86,8 @@ def observe_http_request(
     )
 
 
-def mark_ready(metrics: AppMetrics, *, mode: str) -> None:
-    metrics.app_ready.labels(mode=mode).set(1)
+def set_ready_state(metrics: AppMetrics, *, mode: str, ready: bool) -> None:
+    metrics.app_ready.labels(mode=mode).set(1 if ready else 0)
 
 
 def render_metrics(metrics: AppMetrics) -> bytes:
@@ -98,8 +98,8 @@ __all__ = [
     "AppMetrics",
     "CONTENT_TYPE_LATEST",
     "create_metrics",
-    "mark_ready",
     "observe_http_request",
     "render_metrics",
+    "set_ready_state",
     "touch_http_metrics",
 ]

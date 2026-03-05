@@ -1,39 +1,60 @@
 # EmbedServe
 
-Milestone 1 exposes the HTTP API contract for an embedding service and returns deterministic stub embeddings.
-Real model-backed transformer inference, GPU execution, batching, and model-level determinism work start in Milestone 2.
+EmbedServe is a FastAPI embedding service that runs single-request Hugging Face encoder inference with a pinned model revision.
 
-## Milestone 1 scope
-
-- FastAPI service with `GET /healthz`, `GET /readyz`, `GET /metrics`, and `POST /embed`
-- Structured JSON access logging with per-request `X-Request-ID`
-- Prometheus metrics with custom app metrics plus default process and Python collectors
-- Deterministic stub embeddings used to lock request and response schemas before model integration
+Milestone 2 replaces the stub embedder with a real tokenizer + transformer pipeline, keeps the request and success response schema stable, and makes readiness reflect actual model usability instead of simple process startup.
 
 ## Current behavior
 
-`POST /embed` does not run a tokenizer or a transformer in Milestone 1.
-It hashes each input string into a fixed-size stub vector so clients can integrate against a stable contract while the real inference engine is still pending.
+- `POST /embed` runs tokenizer-backed transformer inference.
+- `GET /healthz` is liveness only and always returns `200` while the process is up.
+- `GET /readyz` returns `200` only after model initialization and warmup succeed.
+- Inference is serialized per process. Batching is not implemented yet.
+- If the configured model revision is not already cached, the first successful startup may download artifacts from Hugging Face.
 
-Readiness also reflects stub mode only.
-`GET /readyz` returning `{"status":"ready","mode":"stub"}` means the HTTP surface is booted, not that a model or GPU is ready.
+## Determinism
 
-## Determinism note
-
-Milestone 1 determinism is limited to the stub implementation.
-It guarantees repeatable stub vectors for the same input within the same code version.
-Model-backed repeatability and its tolerance rules are planned for later milestones.
+The service uses standard inference hygiene only: `model.eval()` and `torch.inference_mode()`.
+Milestone 2 does not guarantee strict reproducibility across hardware, drivers, or library versions.
 
 ## Configuration
 
-All current configuration is environment-driven.
+All configuration is environment-driven.
 
 ```env
-MODEL_ID=stub-model
-MODEL_REVISION=milestone1-stub
+MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
+MODEL_REVISION=826711e54e001c83835913827a843d8dd0a1def9
 LOG_LEVEL=INFO
 MAX_INPUTS_PER_REQUEST=64
+DEVICE=cpu
+DTYPE=float32
+MAX_LENGTH=512
+TRUNCATE=true
+NORMALIZE_EMBEDDINGS=true
+OUTPUT_DTYPE=float32
 ```
+
+### Environment variables
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `MODEL_ID` | `sentence-transformers/all-MiniLM-L6-v2` | Sentence-transformer style encoder model only. |
+| `MODEL_REVISION` | `826711e54e001c83835913827a843d8dd0a1def9` | Must be an exact 40-character hexadecimal commit hash. |
+| `LOG_LEVEL` | `INFO` | `CRITICAL`, `ERROR`, `WARNING`, `INFO`, `DEBUG`, `NOTSET`. |
+| `MAX_INPUTS_PER_REQUEST` | `64` | Must be at least `1`. |
+| `DEVICE` | `cpu` | `cpu`, `cuda`, or `cuda:N`. |
+| `DTYPE` | `float32` | `float32`, `float16`, `bfloat16`. |
+| `MAX_LENGTH` | `512` | Upper bound for tokenizer length. Must be at least `1`. |
+| `TRUNCATE` | `true` | If `true`, overlength inputs are truncated. If `false`, they fail with `422`. |
+| `NORMALIZE_EMBEDDINGS` | `true` | If `true`, L2-normalize pooled embeddings. |
+| `OUTPUT_DTYPE` | `float32` | Final CPU-side output precision before JSON serialization. `float32` or `float16`. |
+
+### Length handling
+
+- Effective max length is `min(MAX_LENGTH, tokenizer.model_max_length)` when the tokenizer exposes a sane finite cap.
+- If `TRUNCATE=true`, each input is truncated independently before inference.
+- If `TRUNCATE=false`, any input that exceeds the effective max length fails the whole request with FastAPI-style `422`.
+- `usage.tokens` is the number of non-padding tokens actually fed into the model after truncation and special-token insertion.
 
 ## API
 
@@ -49,14 +70,42 @@ Returns:
 
 ### `GET /readyz`
 
-Returns:
+Ready response:
 
 ```json
 {
   "status": "ready",
-  "mode": "stub"
+  "mode": "model",
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "826711e54e001c83835913827a843d8dd0a1def9",
+  "device": "cpu",
+  "dtype": "float32"
 }
 ```
+
+Unready response:
+
+```json
+{
+  "status": "not_ready",
+  "mode": "model",
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "826711e54e001c83835913827a843d8dd0a1def9",
+  "device": "cuda:0",
+  "dtype": "float16",
+  "reason": "device_unavailable",
+  "detail": "CUDA device cuda:0 is not available"
+}
+```
+
+Possible `reason` values:
+
+- `initialization_failed`
+- `device_unavailable`
+- `dtype_unsupported`
+- `model_load_failed`
+- `tokenizer_incompatible`
+- `warmup_failed`
 
 ### `POST /embed`
 
@@ -70,11 +119,12 @@ Request body:
 
 Rules:
 
-- `inputs` is required and must be a list of strings
-- Empty lists are rejected
-- Empty or whitespace-only strings are rejected
-- Extra top-level fields are rejected
-- Validation failures return FastAPI-style `422` responses
+- `inputs` is required and must be a list of strings.
+- Empty lists are rejected.
+- Empty or whitespace-only strings are rejected.
+- Extra top-level fields are rejected.
+- Validation failures return FastAPI-style `422`.
+- If the runtime is unready, valid requests return `503`.
 
 Success response:
 
@@ -83,19 +133,25 @@ Success response:
   "data": [
     {
       "index": 0,
-      "embedding": [0.123456, -0.456789, 0.789012, 0.111111, -0.222222, 0.333333, -0.444444, 0.555555]
+      "embedding": [0.1, 0.2, 0.3]
     }
   ],
-  "model": "stub-model",
-  "revision": "milestone1-stub",
-  "dim": 8,
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "826711e54e001c83835913827a843d8dd0a1def9",
+  "dim": 384,
   "usage": {
-    "tokens": 0
+    "tokens": 8
   }
 }
 ```
 
-Every HTTP response includes an `X-Request-ID` header.
+Unready response:
+
+```json
+{
+  "detail": "Model is not ready: initialization_failed"
+}
+```
 
 ### `GET /metrics`
 
@@ -106,7 +162,8 @@ Exposes Prometheus text format with:
 - `embedserve_app_ready`
 - default process and Python runtime metrics
 
-## Planned later milestones
+`embedserve_app_ready{mode="model"}` is `1` when the model runtime is ready and `0` otherwise.
 
-The long-term direction remains a model-backed embedding server with pinned revisions, GPU inference, and batching.
-Those capabilities are not shipped in Milestone 1 and should be treated as planned work.
+## Install
+
+Install the runtime dependencies from `requirements.txt`, then run the app with your preferred ASGI server.

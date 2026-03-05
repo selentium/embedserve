@@ -2,21 +2,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Iterator
 
-import pytest
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from starlette.types import Message
 
+from app.engine.embedder import RuntimeInitializationError
 from app.main import create_app
 from app.metrics import AppMetrics
+from app.runtime import RuntimeState
+from app.settings import Settings
+from tests.fakes import make_fake_embedder, make_ready_runtime
 
 
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    with TestClient(create_app()) as test_client:
-        yield test_client
+def _ready_initializer(settings: Settings) -> RuntimeState:
+    embedder, _, _ = make_fake_embedder(
+        model_id=settings.MODEL_ID,
+        revision=settings.MODEL_REVISION,
+    )
+    return make_ready_runtime(
+        model_id=settings.MODEL_ID,
+        revision=settings.MODEL_REVISION,
+        embedder=embedder,
+    )
 
 
 def _http_request_count(
@@ -39,8 +47,19 @@ def _http_request_count(
     return None
 
 
-def test_metrics_exposes_prometheus_payload(client: TestClient) -> None:
-    response = client.get("/metrics")
+def _app_ready_value(metrics: AppMetrics, *, mode: str) -> float | None:
+    for metric in metrics.app_ready.collect():
+        for sample in metric.samples:
+            if sample.name != "embedserve_app_ready":
+                continue
+            if sample.labels == {"mode": mode}:
+                return sample.value
+    return None
+
+
+def test_metrics_exposes_ready_runtime_state() -> None:
+    with TestClient(create_app(runtime_initializer=_ready_initializer)) as client:
+        response = client.get("/metrics")
 
     assert response.status_code == 200
     assert "text/plain" in response.headers["content-type"]
@@ -49,13 +68,24 @@ def test_metrics_exposes_prometheus_payload(client: TestClient) -> None:
     body = response.text
     assert "embedserve_http_requests_total" in body
     assert "embedserve_http_request_duration_seconds" in body
-    assert 'embedserve_app_ready{mode="stub"} 1.0' in body
+    assert 'embedserve_app_ready{mode="model"} 1.0' in body
     assert "python_gc_objects_collected_total" in body or "process_virtual_memory_bytes" in body
+
+
+def test_metrics_exposes_unready_runtime_state() -> None:
+    def failing_initializer(settings: Settings) -> RuntimeState:
+        raise RuntimeInitializationError("model_load_failed", "weights missing")
+
+    with TestClient(create_app(runtime_initializer=failing_initializer)) as client:
+        response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert 'embedserve_app_ready{mode="model"} 0.0' in response.text
 
 
 def test_metrics_supports_in_process_asgi_transport() -> None:
     async def run_request() -> tuple[int, str]:
-        app = create_app()
+        app = create_app(runtime_initializer=_ready_initializer)
         async with (
             app.router.lifespan_context(app),
             AsyncClient(
@@ -75,7 +105,7 @@ def test_metrics_supports_in_process_asgi_transport() -> None:
 
 def test_cancelled_requests_do_not_record_http_500_metrics() -> None:
     async def run_request() -> float | None:
-        app = create_app()
+        app = create_app(runtime_initializer=_ready_initializer)
 
         @app.get("/cancel-test")
         async def cancel_test() -> dict[str, bool]:
@@ -124,6 +154,7 @@ def test_cancelled_requests_do_not_record_http_500_metrics() -> None:
                 await request_task
 
             assert sent_messages == []
+            assert _app_ready_value(metrics, mode="model") == 1
 
             return _http_request_count(
                 metrics,
@@ -139,7 +170,7 @@ def test_cancelled_requests_do_not_record_http_500_metrics() -> None:
 
 def test_unmatched_routes_use_a_stable_metrics_label() -> None:
     async def run_requests() -> tuple[float | None, float | None, float | None]:
-        app = create_app()
+        app = create_app(runtime_initializer=_ready_initializer)
         async with app.router.lifespan_context(app):
             metrics = app.state.metrics
             async with AsyncClient(

@@ -15,6 +15,7 @@ _LOG_LEVELS = {
     "DEBUG": logging.DEBUG,
     "NOTSET": logging.NOTSET,
 }
+_BASE_LOG_RECORD_FIELDS = set(logging.makeLogRecord({}).__dict__)
 
 
 class JsonFormatter(logging.Formatter):
@@ -28,8 +29,9 @@ class JsonFormatter(logging.Formatter):
             "event": getattr(record, "event", record.getMessage()),
         }
 
-        for field_name in ("request_id", "method", "path", "status_code", "duration_ms"):
-            value = getattr(record, field_name, None)
+        for field_name, value in record.__dict__.items():
+            if field_name in _BASE_LOG_RECORD_FIELDS or field_name == "event":
+                continue
             if value is not None:
                 payload[field_name] = value
 

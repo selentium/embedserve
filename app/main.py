@@ -5,28 +5,36 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Annotated, cast
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.routing import BaseRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.deps import get_embedder, get_metrics, get_settings
-from app.engine.embedder import Embedder, StubEmbedder
+from app.deps import get_metrics, get_runtime, get_settings
+from app.engine.embedder import RuntimeInitializationError
 from app.logging import configure_logging
 from app.metrics import (
     CONTENT_TYPE_LATEST,
     AppMetrics,
     create_metrics,
-    mark_ready,
     observe_http_request,
     render_metrics,
+    set_ready_state,
     touch_http_metrics,
 )
-from app.schemas import EmbedRequest, EmbedResponse, HealthResponse, ReadyResponse
+from app.runtime import RuntimeInitializer, RuntimeState, build_unready_runtime, initialize_runtime
+from app.schemas import (
+    EmbedRequest,
+    EmbedResponse,
+    HealthResponse,
+    NotReadyResponse,
+    ReadyResponse,
+)
 from app.settings import Settings
 
 
@@ -125,7 +133,7 @@ class RequestContextMiddleware:
                 duration_seconds = perf_counter() - started_at
                 duration_ms = round(duration_seconds * 1000, 3)
                 route = _route_template(request)
-                metrics = cast(AppMetrics, request.app.state.metrics)
+                metrics = request.app.state.metrics
                 observe_http_request(
                     metrics,
                     method=request.method,
@@ -147,26 +155,82 @@ class RequestContextMiddleware:
                 )
 
 
+def _runtime_log_fields(
+    settings: Settings,
+    runtime: RuntimeState | None = None,
+) -> dict[str, object]:
+    return {
+        "model": settings.MODEL_ID,
+        "revision": settings.MODEL_REVISION,
+        "device": settings.DEVICE if runtime is None else runtime.device,
+        "dtype": settings.DTYPE if runtime is None else runtime.dtype,
+        "max_length": settings.MAX_LENGTH,
+        "truncate": settings.TRUNCATE,
+        "normalize_embeddings": settings.NORMALIZE_EMBEDDINGS,
+        "output_dtype": settings.OUTPUT_DTYPE,
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     configure_logging(settings.LOG_LEVEL)
 
+    app_logger = logging.getLogger("embedserve.app")
     metrics = create_metrics()
-    mark_ready(metrics, mode="stub")
+    set_ready_state(metrics, mode="model", ready=False)
 
     app.state.settings = settings
     app.state.metrics = metrics
-    app.state.embedder = StubEmbedder(
-        model=settings.MODEL_ID,
-        revision=settings.MODEL_REVISION,
-    )
+
+    runtime_initializer = app.state.runtime_initializer
+
+    try:
+        runtime = runtime_initializer(settings)
+    except ImportError:
+        raise
+    except Exception as exc:
+        if isinstance(exc, RuntimeInitializationError):
+            failure = exc
+        else:
+            failure = RuntimeInitializationError("initialization_failed", str(exc))
+
+        runtime = build_unready_runtime(
+            settings,
+            reason=failure.reason,
+            detail=failure.detail,
+        )
+        app_logger.exception(
+            "Runtime initialization failed",
+            extra={
+                "event": "runtime_initialization_failed",
+                "reason": failure.reason,
+                "detail": failure.detail,
+                **_runtime_log_fields(settings),
+            },
+        )
+    else:
+        set_ready_state(metrics, mode="model", ready=True)
+        app_logger.info(
+            "Runtime initialization succeeded",
+            extra={
+                "event": "runtime_initialization_succeeded",
+                **_runtime_log_fields(settings, runtime),
+            },
+        )
+
+    app.state.runtime = runtime
 
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(
+    *,
+    runtime_initializer: RuntimeInitializer = initialize_runtime,
+) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
+    app.state.runtime_initializer = runtime_initializer
+
     app_logger = logging.getLogger("embedserve.app")
     access_logger = logging.getLogger("embedserve.access")
     app.add_middleware(
@@ -179,9 +243,38 @@ def create_app() -> FastAPI:
     async def healthz() -> HealthResponse:
         return HealthResponse(status="ok")
 
-    @app.get("/readyz", response_model=ReadyResponse)
-    async def readyz() -> ReadyResponse:
-        return ReadyResponse(status="ready", mode="stub")
+    @app.get(
+        "/readyz",
+        response_model=ReadyResponse,
+        responses={503: {"model": NotReadyResponse}},
+    )
+    async def readyz(
+        runtime: Annotated[RuntimeState, Depends(get_runtime)],
+    ) -> ReadyResponse | JSONResponse:
+        if runtime.ready:
+            return ReadyResponse(
+                status="ready",
+                mode=runtime.mode,
+                model=runtime.model_id,
+                revision=runtime.revision,
+                device=runtime.device,
+                dtype=runtime.dtype,
+            )
+
+        assert runtime.reason is not None
+        return JSONResponse(
+            status_code=503,
+            content=NotReadyResponse(
+                status="not_ready",
+                mode=runtime.mode,
+                model=runtime.model_id,
+                revision=runtime.revision,
+                device=runtime.device,
+                dtype=runtime.dtype,
+                reason=runtime.reason,
+                detail=runtime.detail or "Initialization failed",
+            ).model_dump(),
+        )
 
     @app.get("/metrics")
     async def metrics_endpoint(
@@ -190,11 +283,24 @@ def create_app() -> FastAPI:
         touch_http_metrics(metrics, method="GET", route="/metrics", status_code=200)
         return Response(content=render_metrics(metrics), media_type=CONTENT_TYPE_LATEST)
 
-    @app.post("/embed", response_model=EmbedResponse)
+    @app.post(
+        "/embed",
+        response_model=EmbedResponse,
+        responses={
+            503: {
+                "description": "Model runtime is not ready",
+                "content": {
+                    "application/json": {
+                        "example": {"detail": "Model is not ready: initialization_failed"}
+                    }
+                },
+            }
+        },
+    )
     async def embed(
         payload: EmbedRequest,
         settings: Annotated[Settings, Depends(get_settings)],
-        embedder: Annotated[Embedder, Depends(get_embedder)],
+        runtime: Annotated[RuntimeState, Depends(get_runtime)],
     ) -> EmbedResponse:
         actual_inputs = len(payload.inputs)
         if actual_inputs > settings.MAX_INPUTS_PER_REQUEST:
@@ -203,7 +309,14 @@ def create_app() -> FastAPI:
                 actual=actual_inputs,
                 payload=payload,
             )
-        return embedder.embed(payload.inputs)
+
+        if not runtime.ready or runtime.embedder is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Model is not ready: {runtime.reason}",
+            )
+
+        return await run_in_threadpool(runtime.embedder.embed, payload.inputs)
 
     return app
 
