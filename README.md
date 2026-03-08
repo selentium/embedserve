@@ -1,8 +1,8 @@
-# EmbedServe
+# EmbedServe (Milestone 3)
 
 EmbedServe is a FastAPI embedding service that runs single-request Hugging Face encoder inference with a pinned model revision.
 
-Milestone 2 replaces the stub embedder with a real tokenizer + transformer pipeline, keeps the request and success response schema stable, and makes readiness reflect actual model usability instead of simple process startup.
+Milestone 3 keeps the Milestone 2 HTTP contract stable and adds a best-effort numerical-stability policy plus a live verification command for repeated identical requests.
 
 ## Current behavior
 
@@ -14,8 +14,39 @@ Milestone 2 replaces the stub embedder with a real tokenizer + transformer pipel
 
 ## Determinism
 
-The service uses standard inference hygiene only: `model.eval()` and `torch.inference_mode()`.
-Milestone 2 does not guarantee strict reproducibility across hardware, drivers, or library versions.
+EmbedServe applies a best-effort numerical-stability policy at startup:
+
+- `random.seed(0)`
+- `torch.manual_seed(0)`
+- `torch.cuda.manual_seed_all(0)` when CUDA is available
+- `torch.backends.cudnn.deterministic=True`
+- `torch.backends.cudnn.benchmark=False`
+- `torch.use_deterministic_algorithms(True, warn_only=True)` when supported
+
+Policy boundary:
+
+- The service targets bounded numerical drift under a fixed environment.
+- It does not guarantee bitwise-identical outputs.
+- Results are not portable across hardware, drivers, PyTorch/transformers versions, or other low-level runtime changes.
+
+For meaningful verification runs, keep all of the following fixed:
+
+- same host and accelerator
+- same `MODEL_ID` and `MODEL_REVISION`
+- same runtime settings (`DEVICE`, `DTYPE`, `MAX_LENGTH`, `TRUNCATE`, `NORMALIZE_EMBEDDINGS`, `OUTPUT_DTYPE`)
+- warmed runtime before measurement
+
+Run live verification against a started server:
+
+```bash
+make verify-determinism
+```
+
+Intentional failure example (impossible cosine threshold > 1.0) to confirm non-zero exit:
+
+```bash
+make verify-determinism VERIFY_DETERMINISM_ARGS="--min-cosine-similarity 1.0001"
+```
 
 ## Configuration
 

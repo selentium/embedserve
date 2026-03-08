@@ -16,6 +16,7 @@ from starlette.routing import BaseRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.deps import get_metrics, get_runtime, get_settings
+from app.determinism import DeterminismPolicyState, apply_determinism_policy
 from app.engine.embedder import RuntimeInitializationError
 from app.logging import configure_logging
 from app.metrics import (
@@ -158,7 +159,15 @@ class RequestContextMiddleware:
 def _runtime_log_fields(
     settings: Settings,
     runtime: RuntimeState | None = None,
+    determinism: DeterminismPolicyState | None = None,
 ) -> dict[str, object]:
+    if determinism is None:
+        determinism = DeterminismPolicyState(
+            mode="numerical_stability",
+            seed=0,
+            deterministic_algorithms="unsupported",
+        )
+
     return {
         "model": settings.MODEL_ID,
         "revision": settings.MODEL_REVISION,
@@ -168,6 +177,9 @@ def _runtime_log_fields(
         "truncate": settings.TRUNCATE,
         "normalize_embeddings": settings.NORMALIZE_EMBEDDINGS,
         "output_dtype": settings.OUTPUT_DTYPE,
+        "determinism_policy": determinism.mode,
+        "determinism_seed": determinism.seed,
+        "deterministic_algorithms": determinism.deterministic_algorithms,
     }
 
 
@@ -184,8 +196,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.metrics = metrics
 
     runtime_initializer = app.state.runtime_initializer
+    determinism: DeterminismPolicyState | None = None
 
     try:
+        determinism = apply_determinism_policy()
         runtime = runtime_initializer(settings)
     except ImportError:
         raise
@@ -206,7 +220,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "event": "runtime_initialization_failed",
                 "reason": failure.reason,
                 "detail": failure.detail,
-                **_runtime_log_fields(settings),
+                **_runtime_log_fields(settings, determinism=determinism),
             },
         )
     else:
@@ -215,7 +229,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Runtime initialization succeeded",
             extra={
                 "event": "runtime_initialization_succeeded",
-                **_runtime_log_fields(settings, runtime),
+                **_runtime_log_fields(settings, runtime, determinism),
             },
         )
 
