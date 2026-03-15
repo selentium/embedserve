@@ -54,6 +54,7 @@ class _ShutdownSignal:
 class DynamicBatcher:
     _QUEUE_POLL_INTERVAL_SECONDS = 0.001
     _SHUTDOWN_WAIT_SECONDS = 1.0
+    _SHUTDOWN_GRACE_SECONDS = 0.2
 
     def __init__(
         self,
@@ -93,14 +94,18 @@ class DynamicBatcher:
         worker_task = self._worker_task
         self._accepting = False
         self._shutdown_requested = True
-        try:
+        with suppress(asyncio.QueueFull):
             self._queue.put_nowait(_ShutdownSignal())
-        except asyncio.QueueFull:
-            await self._queue.put(_ShutdownSignal())
 
         deadline = perf_counter() + self._SHUTDOWN_WAIT_SECONDS
         while not worker_task.done() and perf_counter() < deadline:
             await asyncio.sleep(self._QUEUE_POLL_INTERVAL_SECONDS)
+
+        if not worker_task.done():
+            self._request_embedder_stop()
+            grace_deadline = perf_counter() + self._SHUTDOWN_GRACE_SECONDS
+            while not worker_task.done() and perf_counter() < grace_deadline:
+                await asyncio.sleep(self._QUEUE_POLL_INTERVAL_SECONDS)
 
         if not worker_task.done():
             worker_task.cancel()
@@ -300,26 +305,34 @@ class DynamicBatcher:
         try:
             cursor = 0
             payload_items = merged_response.data
+            responses: list[tuple[_BatchJob, EmbedResponse]] = []
             for job in jobs:
                 request_items = payload_items[cursor : cursor + len(job.inputs)]
                 if len(request_items) != len(job.inputs):
                     raise ValueError
                 cursor += len(job.inputs)
 
-                response = EmbedResponse(
-                    data=[
-                        EmbeddingItem(index=index, embedding=item.embedding)
-                        for index, item in enumerate(request_items)
-                    ],
-                    model=merged_response.model,
-                    revision=merged_response.revision,
-                    dim=merged_response.dim,
-                    usage=UsageInfo(tokens=sum(job.token_counts)),
+                responses.append(
+                    (
+                        job,
+                        EmbedResponse(
+                            data=[
+                                EmbeddingItem(index=index, embedding=item.embedding)
+                                for index, item in enumerate(request_items)
+                            ],
+                            model=merged_response.model,
+                            revision=merged_response.revision,
+                            dim=merged_response.dim,
+                            usage=UsageInfo(tokens=sum(job.token_counts)),
+                        ),
+                    )
                 )
-                self._set_job_result(job, response)
 
             if cursor != len(payload_items):
                 raise ValueError
+
+            for job, response in responses:
+                self._set_job_result(job, response)
         except Exception:
             self._metrics.batch_inference_failures_total.inc()
             for job in jobs:
@@ -353,6 +366,18 @@ class DynamicBatcher:
 
     def _set_queue_depth(self) -> None:
         self._metrics.batch_queue_depth.set(self._queue.qsize())
+
+    def _request_embedder_stop(self) -> None:
+        for attr in ("cancel", "shutdown", "close"):
+            maybe_method = getattr(self._embedder, attr, None)
+            if callable(maybe_method):
+                maybe_method()
+                return
+
+        release = getattr(self._embedder, "release", None)
+        maybe_set = getattr(release, "set", None)
+        if callable(maybe_set):
+            maybe_set()
 
     @staticmethod
     def _should_prune(job: _BatchJob) -> bool:

@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from contextlib import suppress
 
 import pytest
 
 from app.batching import (
     BatcherQueueFullError,
     BatcherShuttingDownError,
+    BatchInferenceError,
     BatchSubmission,
     DynamicBatcher,
 )
@@ -85,6 +87,18 @@ class EventBlockingEmbedder(RecordingEmbedder):
         self.started.set()
         self.release.wait(timeout=5.0)
         return super().embed(inputs)
+
+
+class InvalidFanOutEmbedder(RecordingEmbedder):
+    def embed(self, inputs: list[str]) -> EmbedResponse:
+        self.calls.append(list(inputs))
+        return EmbedResponse(
+            data=[EmbeddingItem(index=0, embedding=[0.0, float(len(inputs[0]))])],
+            model="test-model",
+            revision="1" * 40,
+            dim=2,
+            usage=UsageInfo(tokens=sum(self.preflight(inputs))),
+        )
 
 
 async def _wait_until_started(embedder: EventBlockingEmbedder) -> None:
@@ -309,5 +323,77 @@ def test_batcher_shutdown_completes_inflight_and_fails_unresolved_queue() -> Non
                 await asyncio.wait_for(second.future, timeout=5)
         finally:
             await batcher.shutdown()
+
+    asyncio.run(run())
+
+
+def test_batcher_shutdown_does_not_block_when_queue_is_full() -> None:
+    async def run() -> None:
+        metrics = create_metrics()
+        embedder = EventBlockingEmbedder()
+        batcher = _make_batcher(
+            embedder=embedder,
+            metrics=metrics,
+            max_batch_size=1,
+            max_batch_tokens=100,
+            batch_timeout_ms=1000,
+            max_batch_queue_size=1,
+        )
+        await batcher.start()
+        shutdown_task: asyncio.Task[None] | None = None
+        try:
+            first = _submit(batcher, text="first", tokens=1)
+            await _wait_until_started(embedder)
+            queued = _submit(batcher, text="queued", tokens=1)
+
+            shutdown_task = asyncio.create_task(batcher.shutdown())
+            done, _ = await asyncio.wait({shutdown_task}, timeout=1.2)
+            assert shutdown_task in done
+
+            first_response = await asyncio.wait_for(first.future, timeout=0.5)
+            assert first_response.data[0].index == 0
+
+            with pytest.raises(BatcherShuttingDownError):
+                await asyncio.wait_for(queued.future, timeout=0.5)
+        finally:
+            embedder.release.set()
+            if shutdown_task is not None:
+                if not shutdown_task.done():
+                    shutdown_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await shutdown_task
+            if batcher._worker_task is not None and not batcher._worker_task.done():
+                batcher._worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await batcher._worker_task
+            batcher._worker_task = None
+
+    asyncio.run(run())
+
+
+def test_batcher_rejects_entire_batch_when_fan_out_payload_is_malformed() -> None:
+    async def run() -> None:
+        metrics = create_metrics()
+        embedder = InvalidFanOutEmbedder()
+        batcher = _make_batcher(
+            embedder=embedder,
+            metrics=metrics,
+            max_batch_size=2,
+            max_batch_tokens=100,
+            batch_timeout_ms=50,
+        )
+        await batcher.start()
+        try:
+            first = _submit(batcher, text="first", tokens=1)
+            second = _submit(batcher, text="second", tokens=1)
+
+            with pytest.raises(BatchInferenceError):
+                await asyncio.wait_for(first.future, timeout=1)
+            with pytest.raises(BatchInferenceError):
+                await asyncio.wait_for(second.future, timeout=1)
+        finally:
+            await batcher.shutdown()
+
+        assert embedder.calls == [["first", "second"]]
 
     asyncio.run(run())

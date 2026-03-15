@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -61,6 +62,37 @@ class InferenceFailureEmbedder:
 
     def embed(self, inputs: list[str]) -> EmbedResponse:
         raise RuntimeError("inference failed")
+
+
+class ReorderingPreflightEmbedder:
+    device = "cpu"
+    dtype = "float32"
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.first_preflight_started = threading.Event()
+        self.release_first_preflight = threading.Event()
+
+    def preflight(self, inputs: list[str]) -> list[int]:
+        text = inputs[0]
+        if text == "first":
+            self.first_preflight_started.set()
+            if not self.release_first_preflight.wait(timeout=5.0):
+                raise AssertionError("first preflight was not released")
+            time.sleep(0.05)
+            return [2]
+
+        if text == "second":
+            if not self.first_preflight_started.wait(timeout=5.0):
+                raise AssertionError("first preflight did not start")
+            self.release_first_preflight.set()
+            return [2]
+
+        raise AssertionError(f"unexpected inputs: {inputs}")
+
+    def embed(self, inputs: list[str]) -> EmbedResponse:
+        self.calls.append(list(inputs))
+        return _response_for_inputs(inputs)
 
 
 def _runtime_with_embedder(settings: Settings, embedder: Embedder) -> RuntimeState:
@@ -229,3 +261,34 @@ def test_embed_batch_inference_failure_maps_to_500_and_metric() -> None:
     assert status_code == 500
     assert detail == "Embedding inference failed"
     assert "embedserve_batch_inference_failures_total 1.0" in metrics_body
+
+
+def test_embed_preserves_fifo_arrival_order_before_preflight_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAX_BATCH_SIZE", "1")
+    monkeypatch.setenv("BATCH_TIMEOUT_MS", "1000")
+
+    embedder = ReorderingPreflightEmbedder()
+
+    def initializer(settings: Settings) -> RuntimeState:
+        return _runtime_with_embedder(settings, embedder)
+
+    async def run() -> tuple[int, int]:
+        app = create_app(runtime_initializer=initializer)
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+        ):
+            first_task = asyncio.create_task(client.post("/embed", json={"inputs": ["first"]}))
+            started = await asyncio.to_thread(embedder.first_preflight_started.wait, 5.0)
+            assert started
+
+            second_task = asyncio.create_task(client.post("/embed", json={"inputs": ["second"]}))
+            first, second = await asyncio.gather(first_task, second_task)
+            return first.status_code, second.status_code
+
+    first_status, second_status = asyncio.run(run())
+    assert first_status == 200
+    assert second_status == 200
+    assert embedder.calls == [["first"], ["second"]]

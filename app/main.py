@@ -51,6 +51,33 @@ _DETAIL_BATCH_INFERENCE_FAILED = "Embedding inference failed"
 _SUBMISSION_POLL_INTERVAL_SECONDS = 0.001
 
 
+class _EmbedSubmissionSequencer:
+    def __init__(self) -> None:
+        self._condition = asyncio.Condition()
+        self._next_ticket = 0
+        self._active_ticket = 0
+        self._released_tickets: set[int] = set()
+
+    async def issue_ticket(self) -> int:
+        async with self._condition:
+            ticket = self._next_ticket
+            self._next_ticket += 1
+            return ticket
+
+    async def wait_turn(self, ticket: int) -> None:
+        async with self._condition:
+            while ticket != self._active_ticket:
+                await self._condition.wait()
+
+    async def complete_turn(self, ticket: int) -> None:
+        async with self._condition:
+            self._released_tickets.add(ticket)
+            while self._active_ticket in self._released_tickets:
+                self._released_tickets.remove(self._active_ticket)
+                self._active_ticket += 1
+            self._condition.notify_all()
+
+
 def _route_template(request: Request) -> str:
     route = request.scope.get("route")
     if isinstance(route, BaseRoute):
@@ -220,6 +247,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.settings = settings
     app.state.metrics = metrics
+    app.state.embed_submission_sequencer = _EmbedSubmissionSequencer()
 
     runtime_initializer = app.state.runtime_initializer
     determinism: DeterminismPolicyState | None = None
@@ -385,6 +413,7 @@ def create_app(
     )
     async def embed(
         payload: EmbedRequest,
+        request: Request,
         settings: Annotated[Settings, Depends(get_settings)],
         runtime: Annotated[RuntimeState, Depends(get_runtime)],
         batcher: Annotated[DynamicBatcher | None, Depends(get_batcher)],
@@ -408,23 +437,29 @@ def create_app(
             metrics.batch_shutdown_rejections_total.inc()
             raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN)
 
+        sequencer: _EmbedSubmissionSequencer = request.app.state.embed_submission_sequencer
+        ticket = await sequencer.issue_ticket()
         try:
-            token_counts = await run_in_threadpool(runtime.embedder.preflight, payload.inputs)
-        except asyncio.CancelledError:
-            raise
-        except RequestValidationError:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=_DETAIL_BATCH_INFERENCE_FAILED) from exc
+            try:
+                token_counts = await run_in_threadpool(runtime.embedder.preflight, payload.inputs)
+            except asyncio.CancelledError:
+                raise
+            except RequestValidationError:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=_DETAIL_BATCH_INFERENCE_FAILED) from exc
 
-        try:
-            submission = batcher.submit(payload.inputs, token_counts)
-        except BatcherQueueFullError as exc:
-            metrics.batch_overload_rejections_total.inc()
-            raise HTTPException(status_code=503, detail=_DETAIL_BATCH_QUEUE_FULL) from exc
-        except BatcherShuttingDownError as exc:
-            metrics.batch_shutdown_rejections_total.inc()
-            raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN) from exc
+            await sequencer.wait_turn(ticket)
+            try:
+                submission = batcher.submit(payload.inputs, token_counts)
+            except BatcherQueueFullError as exc:
+                metrics.batch_overload_rejections_total.inc()
+                raise HTTPException(status_code=503, detail=_DETAIL_BATCH_QUEUE_FULL) from exc
+            except BatcherShuttingDownError as exc:
+                metrics.batch_shutdown_rejections_total.inc()
+                raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN) from exc
+        finally:
+            await sequencer.complete_turn(ticket)
 
         timeout_seconds = settings.BATCH_REQUEST_TIMEOUT_MS / 1000.0
         try:
