@@ -259,4 +259,51 @@ The harness profile captures:
 
 ## Install
 
-Install the runtime dependencies from `requirements.txt`, then run the app with your preferred ASGI server.
+For a local developer setup, run:
+
+```bash
+make bootstrap-dev
+```
+
+That creates `venv/`, installs both runtime and dev dependencies, and installs the repo's
+pre-commit hooks.
+
+## Worktrees
+
+Create a new sibling worktree on a new branch named after `WORKTREE`:
+
+```bash
+make worktree-create WORKTREE=agent-a
+```
+
+This defaults to:
+
+- base ref `HEAD`
+- path `../embedserve-agent-a`
+- copying `.env` from the current repo when it exists
+- bootstrapping the new worktree with `make bootstrap-dev`
+
+Create from a different base or path:
+
+```bash
+make worktree-create WORKTREE=bugfix BASE=main
+make worktree-create WORKTREE=perf WORKTREE_PATH=../scratch/embedserve-perf
+```
+
+Skip setup or `.env` copy when you want a lighter-weight checkout:
+
+```bash
+make worktree-create WORKTREE=docs SETUP=0 COPY_ENV=0
+```
+
+Remove a clean worktree but keep its branch:
+
+```bash
+make worktree-remove WORKTREE=agent-a
+```
+
+Force-remove a dirty worktree and delete its branch too:
+
+```bash
+make worktree-remove WORKTREE=agent-a FORCE=1 DELETE_BRANCH=1
+```

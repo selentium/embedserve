@@ -1,7 +1,15 @@
-.PHONY: help start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run check
+.PHONY: help bootstrap-dev worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run check
 
 VENV := ./venv/bin
 PRE_COMMIT_HOME := /tmp/pre-commit-cache
+PYTHON ?= python3
+WORKTREE ?=
+BASE ?= HEAD
+WORKTREE_PATH ?=
+SETUP ?= 1
+COPY_ENV ?= 1
+FORCE ?= 0
+DELETE_BRANCH ?= 0
 VERIFY_DETERMINISM_URL ?= http://127.0.0.1:8000/embed
 VERIFY_DETERMINISM_ITERATIONS ?= 25
 VERIFY_DETERMINISM_MAX_ABS_DIFF ?= 2e-3
@@ -28,6 +36,9 @@ VERIFY_BATCHING_ARGS ?=
 
 help:
 	@echo "Available targets:"
+	@echo "  bootstrap-dev     Create local venv, install deps, install pre-commit hooks"
+	@echo "  worktree-create   Create a sibling git worktree on a new branch"
+	@echo "  worktree-remove   Remove a git worktree safely"
 	@echo "  start             Start API server (loads .env if present)"
 	@echo "  format            Format Python code and apply safe lint fixes"
 	@echo "  lint              Run Ruff lint checks"
@@ -40,6 +51,28 @@ help:
 	@echo "  pre-commit-install Install git pre-commit hooks"
 	@echo "  pre-commit-run    Run configured pre-commit hooks on all files"
 	@echo "  check             Run lint + typecheck + test"
+
+bootstrap-dev:
+	$(PYTHON) -m venv venv
+	$(VENV)/python -m pip install --upgrade pip
+	$(VENV)/python -m pip install -r requirements.txt -r dev-requirements.txt
+	$(MAKE) pre-commit-install
+
+worktree-create:
+	@WORKTREE_NAME="$(WORKTREE)" \
+	WORKTREE_PATH="$(WORKTREE_PATH)" \
+	BASE_REF="$(BASE)" \
+	COPY_ENV="$(COPY_ENV)" \
+	SETUP="$(SETUP)" \
+	SETUP_COMMAND='$(MAKE) -C "$$WORKTREE_PATH" bootstrap-dev PYTHON="$(PYTHON)"' \
+	bash scripts/worktree.sh create
+
+worktree-remove:
+	@WORKTREE_NAME="$(WORKTREE)" \
+	WORKTREE_PATH="$(WORKTREE_PATH)" \
+	FORCE="$(FORCE)" \
+	DELETE_BRANCH="$(DELETE_BRANCH)" \
+	bash scripts/worktree.sh remove
 
 start:
 	@set -a; \
