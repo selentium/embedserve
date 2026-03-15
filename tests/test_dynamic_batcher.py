@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from contextlib import suppress
+from typing import Protocol
 
 import pytest
 
@@ -77,6 +78,18 @@ class SleepingEmbedder(RecordingEmbedder):
         return super().embed(inputs)
 
 
+class StartedSleepingEmbedder(RecordingEmbedder):
+    def __init__(self, *, sleep_seconds: float) -> None:
+        super().__init__()
+        self.sleep_seconds = sleep_seconds
+        self.started = threading.Event()
+
+    def embed(self, inputs: list[str]) -> EmbedResponse:
+        self.started.set()
+        time.sleep(self.sleep_seconds)
+        return super().embed(inputs)
+
+
 class EventBlockingEmbedder(RecordingEmbedder):
     def __init__(self) -> None:
         super().__init__()
@@ -87,6 +100,22 @@ class EventBlockingEmbedder(RecordingEmbedder):
         self.started.set()
         self.release.wait(timeout=5.0)
         return super().embed(inputs)
+
+
+class NonStoppableBlockingEmbedder(RecordingEmbedder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.allow_finish = threading.Event()
+        self.finished = threading.Event()
+
+    def embed(self, inputs: list[str]) -> EmbedResponse:
+        self.started.set()
+        try:
+            self.allow_finish.wait(timeout=5.0)
+            return super().embed(inputs)
+        finally:
+            self.finished.set()
 
 
 class InvalidFanOutEmbedder(RecordingEmbedder):
@@ -101,7 +130,11 @@ class InvalidFanOutEmbedder(RecordingEmbedder):
         )
 
 
-async def _wait_until_started(embedder: EventBlockingEmbedder) -> None:
+class _HasStartedEvent(Protocol):
+    started: threading.Event
+
+
+async def _wait_until_started(embedder: _HasStartedEvent) -> None:
     for _ in range(200):
         if embedder.started.is_set():
             return
@@ -294,6 +327,40 @@ def test_batcher_rejects_when_queue_is_full() -> None:
     asyncio.run(run())
 
 
+def test_batcher_prunes_cancelled_queue_entry_before_reporting_overload() -> None:
+    async def run() -> None:
+        metrics = create_metrics()
+        embedder = StartedSleepingEmbedder(sleep_seconds=0.25)
+        batcher = _make_batcher(
+            embedder=embedder,
+            metrics=metrics,
+            max_batch_size=1,
+            max_batch_tokens=100,
+            batch_timeout_ms=1000,
+            max_batch_queue_size=1,
+        )
+        await batcher.start()
+        try:
+            first = _submit(batcher, text="first", tokens=1)
+            await _wait_until_started(embedder)
+
+            cancelled = _submit(batcher, text="cancelled", tokens=1)
+            batcher.cancel(cancelled.job_id)
+            replacement = _submit(batcher, text="replacement", tokens=1)
+
+            assert cancelled.future.cancelled()
+
+            await asyncio.wait_for(first.future, timeout=5)
+            replacement_response = await asyncio.wait_for(replacement.future, timeout=5)
+        finally:
+            await batcher.shutdown()
+
+        assert replacement_response.data[0].index == 0
+        assert embedder.calls == [["first"], ["replacement"]]
+
+    asyncio.run(run())
+
+
 def test_batcher_shutdown_completes_inflight_and_fails_unresolved_queue() -> None:
     async def run() -> None:
         metrics = create_metrics()
@@ -323,6 +390,50 @@ def test_batcher_shutdown_completes_inflight_and_fails_unresolved_queue() -> Non
                 await asyncio.wait_for(second.future, timeout=5)
         finally:
             await batcher.shutdown()
+
+    asyncio.run(run())
+
+
+def test_batcher_shutdown_waits_for_non_stoppable_inflight_inference() -> None:
+    async def run() -> None:
+        metrics = create_metrics()
+        embedder = NonStoppableBlockingEmbedder()
+        batcher = _make_batcher(
+            embedder=embedder,
+            metrics=metrics,
+            max_batch_size=1,
+            max_batch_tokens=100,
+            batch_timeout_ms=1000,
+        )
+        await batcher.start()
+        first: BatchSubmission | None = None
+        shutdown_task: asyncio.Task[None] | None = None
+        try:
+            first = _submit(batcher, text="first", tokens=1)
+            await _wait_until_started(embedder)
+
+            shutdown_task = asyncio.create_task(batcher.shutdown())
+            done, _ = await asyncio.wait({shutdown_task}, timeout=1.25)
+            assert shutdown_task not in done
+            assert not embedder.finished.is_set()
+
+            embedder.allow_finish.set()
+            await asyncio.wait_for(shutdown_task, timeout=2)
+
+            first_response = await asyncio.wait_for(first.future, timeout=2)
+            assert first_response.data[0].index == 0
+        finally:
+            embedder.allow_finish.set()
+            if first is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(first.future, timeout=2)
+            if shutdown_task is not None and not shutdown_task.done():
+                await asyncio.wait_for(shutdown_task, timeout=2)
+            if batcher._worker_task is not None and not batcher._worker_task.done():
+                batcher._worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await batcher._worker_task
+            batcher._worker_task = None
 
     asyncio.run(run())
 

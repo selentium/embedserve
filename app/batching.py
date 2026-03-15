@@ -75,6 +75,7 @@ class DynamicBatcher:
             maxsize=max_batch_queue_size
         )
         self._worker_task: asyncio.Task[None] | None = None
+        self._embed_inflight = False
         self._accepting = False
         self._shutdown_requested = False
         self._next_job_id = 1
@@ -108,15 +109,19 @@ class DynamicBatcher:
                 await asyncio.sleep(self._QUEUE_POLL_INTERVAL_SECONDS)
 
         if not worker_task.done():
-            worker_task.cancel()
-            with suppress(asyncio.CancelledError):
+            if not self._embed_inflight:
+                worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await worker_task
+                self._fail_pending_jobs_with_shutdown()
+                self._drain_with_shutdown()
+            else:
                 await worker_task
-            self._fail_pending_jobs_with_shutdown()
-            self._drain_with_shutdown()
         else:
             worker_task.result()
 
         self._worker_task = None
+        self._embed_inflight = False
         self._set_queue_depth()
 
     def submit(self, inputs: list[str], token_counts: list[int]) -> BatchSubmission:
@@ -135,8 +140,12 @@ class DynamicBatcher:
 
         try:
             self._queue.put_nowait(job)
-        except asyncio.QueueFull as exc:
-            raise BatcherQueueFullError from exc
+        except asyncio.QueueFull:
+            self._prune_cancelled_jobs_from_queue()
+            try:
+                self._queue.put_nowait(job)
+            except asyncio.QueueFull as retry_exc:
+                raise BatcherQueueFullError from retry_exc
 
         self._jobs_by_id[job.job_id] = job
         self._set_queue_depth()
@@ -149,6 +158,7 @@ class DynamicBatcher:
         job.cancelled = True
         if not job.future.done():
             job.future.cancel()
+        self._prune_cancelled_jobs_from_queue()
 
     async def _worker(self) -> None:
         carry: _BatchJob | None = None
@@ -289,6 +299,7 @@ class DynamicBatcher:
         self._metrics.batch_size.observe(len(active_jobs))
         self._metrics.batch_token_count.observe(total_tokens)
 
+        self._embed_inflight = True
         try:
             merged_response = await run_in_threadpool(self._embedder.embed, batch_inputs)
         except asyncio.CancelledError:
@@ -298,6 +309,8 @@ class DynamicBatcher:
             for job in active_jobs:
                 self._set_job_exception(job, BatchInferenceError())
             return
+        finally:
+            self._embed_inflight = False
 
         self._fan_out(active_jobs, merged_response)
 
@@ -362,6 +375,39 @@ class DynamicBatcher:
 
     def _complete_job(self, job: _BatchJob) -> None:
         self._jobs_by_id.pop(job.job_id, None)
+        self._set_queue_depth()
+
+    def _prune_cancelled_jobs_from_queue(self) -> None:
+        queue_items = getattr(self._queue, "_queue", None)
+        if queue_items is None:
+            return
+
+        pruned_jobs: list[_BatchJob] = []
+        retained_items: list[_BatchJob | _ShutdownSignal] = []
+        for queued_item in queue_items:
+            if isinstance(queued_item, _BatchJob) and self._should_prune(queued_item):
+                pruned_jobs.append(queued_item)
+                continue
+            retained_items.append(queued_item)
+
+        if not pruned_jobs:
+            return
+
+        queue_items.clear()
+        queue_items.extend(retained_items)
+        if hasattr(self._queue, "_unfinished_tasks"):
+            self._queue._unfinished_tasks = max(
+                0,
+                self._queue._unfinished_tasks - len(pruned_jobs),
+            )
+            if self._queue._unfinished_tasks == 0:
+                finished = getattr(self._queue, "_finished", None)
+                if finished is not None:
+                    finished.set()
+
+        for job in pruned_jobs:
+            self._jobs_by_id.pop(job.job_id, None)
+
         self._set_queue_depth()
 
     def _set_queue_depth(self) -> None:
