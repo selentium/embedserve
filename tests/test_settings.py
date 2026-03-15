@@ -16,6 +16,11 @@ def test_settings_accept_new_public_runtime_fields(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("NORMALIZE_EMBEDDINGS", "false")
     monkeypatch.setenv("OUTPUT_DTYPE", "float16")
     monkeypatch.setenv("MAX_INPUTS_PER_REQUEST", "8")
+    monkeypatch.setenv("MAX_BATCH_SIZE", "16")
+    monkeypatch.setenv("MAX_BATCH_TOKENS", "1024")
+    monkeypatch.setenv("BATCH_TIMEOUT_MS", "5")
+    monkeypatch.setenv("MAX_BATCH_QUEUE_SIZE", "128")
+    monkeypatch.setenv("BATCH_REQUEST_TIMEOUT_MS", "2500")
 
     settings = Settings()
 
@@ -26,6 +31,11 @@ def test_settings_accept_new_public_runtime_fields(monkeypatch: pytest.MonkeyPat
     assert settings.NORMALIZE_EMBEDDINGS is False
     assert settings.OUTPUT_DTYPE == "float16"
     assert settings.MAX_INPUTS_PER_REQUEST == 8
+    assert settings.MAX_BATCH_SIZE == 16
+    assert settings.MAX_BATCH_TOKENS == 1024
+    assert settings.BATCH_TIMEOUT_MS == 5
+    assert settings.MAX_BATCH_QUEUE_SIZE == 128
+    assert settings.BATCH_REQUEST_TIMEOUT_MS == 2500
 
 
 @pytest.mark.parametrize(
@@ -37,6 +47,11 @@ def test_settings_accept_new_public_runtime_fields(monkeypatch: pytest.MonkeyPat
         ("MODEL_REVISION", "main"),
         ("MODEL_REVISION", "1234abcd"),
         ("MAX_LENGTH", "0"),
+        ("MAX_BATCH_SIZE", "0"),
+        ("MAX_BATCH_TOKENS", "0"),
+        ("BATCH_TIMEOUT_MS", "0"),
+        ("MAX_BATCH_QUEUE_SIZE", "0"),
+        ("BATCH_REQUEST_TIMEOUT_MS", "0"),
     ],
 )
 def test_settings_reject_invalid_runtime_configuration(

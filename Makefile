@@ -1,4 +1,4 @@
-.PHONY: help start format lint typecheck test verify-determinism audit hadolint pre-commit-install pre-commit-run check
+.PHONY: help start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run check
 
 VENV := ./venv/bin
 PRE_COMMIT_HOME := /tmp/pre-commit-cache
@@ -8,6 +8,23 @@ VERIFY_DETERMINISM_MAX_ABS_DIFF ?= 2e-3
 VERIFY_DETERMINISM_MIN_COSINE_SIMILARITY ?= 0.9995
 VERIFY_DETERMINISM_TIMEOUT_SECONDS ?= 10
 VERIFY_DETERMINISM_ARGS ?=
+VERIFY_BATCHING_EMBED_URL ?= http://127.0.0.1:8000/embed
+VERIFY_BATCHING_METRICS_URL ?= http://127.0.0.1:8000/metrics
+VERIFY_BATCHING_HARDWARE_ID ?= local-dev
+VERIFY_BATCHING_MODEL_ID ?= sentence-transformers/all-MiniLM-L6-v2
+VERIFY_BATCHING_MODEL_REVISION ?= 826711e54e001c83835913827a843d8dd0a1def9
+VERIFY_BATCHING_CONCURRENCY ?= 32
+VERIFY_BATCHING_TOTAL_REQUESTS ?= 256
+VERIFY_BATCHING_WARMUP_REQUESTS ?= 32
+VERIFY_BATCHING_INPUTS_PER_REQUEST ?= 2
+VERIFY_BATCHING_INPUT_TOKEN_COUNT ?= 24
+VERIFY_BATCHING_TIMEOUT_SECONDS ?= 10
+VERIFY_BATCHING_MAX_BATCH_SIZE ?= 128
+VERIFY_BATCHING_MAX_BATCH_TOKENS ?= 8192
+VERIFY_BATCHING_BATCH_TIMEOUT_MS ?= 2
+VERIFY_BATCHING_MAX_BATCH_QUEUE_SIZE ?= 1024
+VERIFY_BATCHING_BATCH_REQUEST_TIMEOUT_MS ?= 5000
+VERIFY_BATCHING_ARGS ?=
 
 help:
 	@echo "Available targets:"
@@ -17,6 +34,7 @@ help:
 	@echo "  typecheck         Run mypy type checks"
 	@echo "  test              Run pytest (with coverage from pyproject.toml)"
 	@echo "  verify-determinism Run live determinism verification against /embed"
+	@echo "  verify-batching   Run live batching acceptance verification"
 	@echo "  audit             Audit dev dependencies for known vulnerabilities"
 	@echo "  hadolint          Lint Dockerfiles if present"
 	@echo "  pre-commit-install Install git pre-commit hooks"
@@ -50,6 +68,26 @@ verify-determinism:
 		--min-cosine-similarity "$(VERIFY_DETERMINISM_MIN_COSINE_SIMILARITY)" \
 		--timeout-seconds "$(VERIFY_DETERMINISM_TIMEOUT_SECONDS)" \
 		$(VERIFY_DETERMINISM_ARGS)
+
+verify-batching:
+	$(VENV)/python scripts/verify_batching.py \
+		--embed-url "$(VERIFY_BATCHING_EMBED_URL)" \
+		--metrics-url "$(VERIFY_BATCHING_METRICS_URL)" \
+		--hardware-id "$(VERIFY_BATCHING_HARDWARE_ID)" \
+		--model-id "$(VERIFY_BATCHING_MODEL_ID)" \
+		--model-revision "$(VERIFY_BATCHING_MODEL_REVISION)" \
+		--concurrency "$(VERIFY_BATCHING_CONCURRENCY)" \
+		--total-requests "$(VERIFY_BATCHING_TOTAL_REQUESTS)" \
+		--warmup-requests "$(VERIFY_BATCHING_WARMUP_REQUESTS)" \
+		--inputs-per-request "$(VERIFY_BATCHING_INPUTS_PER_REQUEST)" \
+		--input-token-count "$(VERIFY_BATCHING_INPUT_TOKEN_COUNT)" \
+		--timeout-seconds "$(VERIFY_BATCHING_TIMEOUT_SECONDS)" \
+		--max-batch-size "$(VERIFY_BATCHING_MAX_BATCH_SIZE)" \
+		--max-batch-tokens "$(VERIFY_BATCHING_MAX_BATCH_TOKENS)" \
+		--batch-timeout-ms "$(VERIFY_BATCHING_BATCH_TIMEOUT_MS)" \
+		--max-batch-queue-size "$(VERIFY_BATCHING_MAX_BATCH_QUEUE_SIZE)" \
+		--batch-request-timeout-ms "$(VERIFY_BATCHING_BATCH_REQUEST_TIMEOUT_MS)" \
+		$(VERIFY_BATCHING_ARGS)
 
 audit:
 	$(VENV)/pip-audit -r dev-requirements.txt

@@ -1,15 +1,15 @@
-# EmbedServe (Milestone 3)
+# EmbedServe (Milestone 4)
 
-EmbedServe is a FastAPI embedding service that runs single-request Hugging Face encoder inference with a pinned model revision.
+EmbedServe is a FastAPI embedding service that runs dynamically batched Hugging Face encoder inference with a pinned model revision.
 
-Milestone 3 keeps the Milestone 2 HTTP contract stable and adds a best-effort numerical-stability policy plus a live verification command for repeated identical requests.
+Milestone 4 keeps the Milestone 3 response schema stable, adds always-on FIFO dynamic batching for `POST /embed`, and keeps the determinism verification workflow.
 
 ## Current behavior
 
 - `POST /embed` runs tokenizer-backed transformer inference.
 - `GET /healthz` is liveness only and always returns `200` while the process is up.
 - `GET /readyz` returns `200` only after model initialization and warmup succeed.
-- Inference is serialized per process. Batching is not implemented yet.
+- Inference is always dynamically batched in strict FIFO order while preserving per-request response semantics.
 - If the configured model revision is not already cached, the first successful startup may download artifacts from Hugging Face.
 
 ## Determinism
@@ -63,6 +63,11 @@ MAX_LENGTH=512
 TRUNCATE=true
 NORMALIZE_EMBEDDINGS=true
 OUTPUT_DTYPE=float32
+MAX_BATCH_SIZE=128
+MAX_BATCH_TOKENS=8192
+BATCH_TIMEOUT_MS=2
+MAX_BATCH_QUEUE_SIZE=1024
+BATCH_REQUEST_TIMEOUT_MS=5000
 ```
 
 ### Environment variables
@@ -79,6 +84,11 @@ OUTPUT_DTYPE=float32
 | `TRUNCATE` | `true` | If `true`, overlength inputs are truncated. If `false`, they fail with `422`. |
 | `NORMALIZE_EMBEDDINGS` | `true` | If `true`, L2-normalize pooled embeddings. |
 | `OUTPUT_DTYPE` | `float32` | Final CPU-side output precision before JSON serialization. `float32` or `float16`. |
+| `MAX_BATCH_SIZE` | `128` | Maximum number of requests merged into one batch flush. Must be at least `1`. |
+| `MAX_BATCH_TOKENS` | `8192` | Maximum summed post-truncation token count merged into one batch flush. Must be at least `1`. |
+| `BATCH_TIMEOUT_MS` | `2` | Max wait to assemble a shared batch before flush. Must be at least `1`. |
+| `MAX_BATCH_QUEUE_SIZE` | `1024` | Maximum queued requests before overload rejection. Must be at least `1`. |
+| `BATCH_REQUEST_TIMEOUT_MS` | `5000` | Per-request wait timeout while awaiting a batch result. Must be at least `1`. |
 
 ### Length handling
 
@@ -156,6 +166,10 @@ Rules:
 - Extra top-level fields are rejected.
 - Validation failures return FastAPI-style `422`.
 - If the runtime is unready, valid requests return `503`.
+- If the batch queue is saturated, valid requests return `503 {"detail":"Batch queue is full"}`.
+- If a queued request exceeds `BATCH_REQUEST_TIMEOUT_MS`, it returns `503 {"detail":"Embedding request timed out"}`.
+- During shutdown drain, unresolved requests return `503 {"detail":"Service is shutting down"}`.
+- Internal preflight/inference failures return `500 {"detail":"Embedding inference failed"}`.
 
 Success response:
 
@@ -184,6 +198,20 @@ Unready response:
 }
 ```
 
+Other `503` operational responses:
+
+```json
+{"detail":"Batch queue is full"}
+```
+
+```json
+{"detail":"Embedding request timed out"}
+```
+
+```json
+{"detail":"Service is shutting down"}
+```
+
 ### `GET /metrics`
 
 Exposes Prometheus text format with:
@@ -191,9 +219,43 @@ Exposes Prometheus text format with:
 - `embedserve_http_requests_total`
 - `embedserve_http_request_duration_seconds`
 - `embedserve_app_ready`
+- `embedserve_batch_queue_depth`
+- `embedserve_batch_queue_wait_seconds`
+- `embedserve_batch_size`
+- `embedserve_batch_token_count`
+- `embedserve_batch_flush_total{reason="max_batch_size|max_batch_tokens|timeout|shutdown"}`
+- `embedserve_batch_overload_rejections_total`
+- `embedserve_batch_request_timeouts_total`
+- `embedserve_batch_request_cancellations_total`
+- `embedserve_batch_shutdown_rejections_total`
+- `embedserve_batch_inference_failures_total`
 - default process and Python runtime metrics
 
 `embedserve_app_ready{mode="model"}` is `1` when the model runtime is ready and `0` otherwise.
+
+Batch histogram buckets are fixed in code for compatibility:
+
+- `embedserve_batch_queue_wait_seconds`: `0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5`
+- `embedserve_batch_size`: `1, 2, 4, 8, 16, 32, 64, 128, 256`
+- `embedserve_batch_token_count`: `32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384`
+
+## Batching Verification Harness
+
+Run the batching acceptance harness against a live server:
+
+```bash
+make verify-batching
+```
+
+The harness profile captures:
+
+- hardware identifier (`--hardware-id`)
+- `MODEL_ID` (`--model-id`)
+- `MODEL_REVISION` (`--model-revision`)
+- concurrency and request count
+- input shape (`--inputs-per-request`, `--input-token-count`)
+- warmup count
+- batching settings (`MAX_BATCH_SIZE`, `MAX_BATCH_TOKENS`, `BATCH_TIMEOUT_MS`, `MAX_BATCH_QUEUE_SIZE`, `BATCH_REQUEST_TIMEOUT_MS`)
 
 ## Install
 

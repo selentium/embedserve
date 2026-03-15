@@ -69,6 +69,19 @@ def test_metrics_exposes_ready_runtime_state() -> None:
     assert "embedserve_http_requests_total" in body
     assert "embedserve_http_request_duration_seconds" in body
     assert 'embedserve_app_ready{mode="model"} 1.0' in body
+    assert "embedserve_batch_queue_depth" in body
+    assert "embedserve_batch_queue_wait_seconds" in body
+    assert "embedserve_batch_size" in body
+    assert "embedserve_batch_token_count" in body
+    assert 'embedserve_batch_flush_total{reason="max_batch_size"} 0.0' in body
+    assert 'embedserve_batch_flush_total{reason="max_batch_tokens"} 0.0' in body
+    assert 'embedserve_batch_flush_total{reason="timeout"} 0.0' in body
+    assert 'embedserve_batch_flush_total{reason="shutdown"} 0.0' in body
+    assert "embedserve_batch_overload_rejections_total" in body
+    assert "embedserve_batch_request_timeouts_total" in body
+    assert "embedserve_batch_request_cancellations_total" in body
+    assert "embedserve_batch_shutdown_rejections_total" in body
+    assert "embedserve_batch_inference_failures_total" in body
     assert "python_gc_objects_collected_total" in body or "process_virtual_memory_bytes" in body
 
 

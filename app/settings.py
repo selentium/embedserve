@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     MODEL_REVISION: str = "826711e54e001c83835913827a843d8dd0a1def9"
     LOG_LEVEL: str = "INFO"
     MAX_INPUTS_PER_REQUEST: int = Field(default=64, ge=1)
+    MAX_BATCH_SIZE: int = Field(default=128, ge=1)
+    MAX_BATCH_TOKENS: int = Field(default=8192, ge=1)
+    BATCH_TIMEOUT_MS: int = Field(default=2, ge=1)
+    MAX_BATCH_QUEUE_SIZE: int = Field(default=1024, ge=1)
+    BATCH_REQUEST_TIMEOUT_MS: int = Field(default=5000, ge=1)
     DEVICE: str = "cpu"
     DTYPE: str = "float32"
     MAX_LENGTH: int = Field(default=512, ge=1)

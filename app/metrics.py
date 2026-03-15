@@ -21,6 +21,16 @@ class AppMetrics:
     http_requests_total: Counter
     http_request_duration_seconds: Histogram
     app_ready: Gauge
+    batch_queue_depth: Gauge
+    batch_queue_wait_seconds: Histogram
+    batch_size: Histogram
+    batch_token_count: Histogram
+    batch_flush_total: Counter
+    batch_overload_rejections_total: Counter
+    batch_request_timeouts_total: Counter
+    batch_request_cancellations_total: Counter
+    batch_shutdown_rejections_total: Counter
+    batch_inference_failures_total: Counter
 
 
 def create_metrics() -> AppMetrics:
@@ -48,12 +58,79 @@ def create_metrics() -> AppMetrics:
         labelnames=("mode",),
         registry=registry,
     )
+    batch_queue_depth = Gauge(
+        "embedserve_batch_queue_depth",
+        "Current number of pending embedding jobs in the batch queue.",
+        registry=registry,
+    )
+    batch_queue_wait_seconds = Histogram(
+        "embedserve_batch_queue_wait_seconds",
+        "Time spent waiting in the batch queue before inference execution.",
+        buckets=(0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0),
+        registry=registry,
+    )
+    batch_size = Histogram(
+        "embedserve_batch_size",
+        "Number of requests merged into each inference batch.",
+        buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256),
+        registry=registry,
+    )
+    batch_token_count = Histogram(
+        "embedserve_batch_token_count",
+        "Total post-truncation token count per executed inference batch.",
+        buckets=(32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384),
+        registry=registry,
+    )
+    batch_flush_total = Counter(
+        "embedserve_batch_flush_total",
+        "Total number of batch flushes by flush trigger reason.",
+        labelnames=("reason",),
+        registry=registry,
+    )
+    batch_overload_rejections_total = Counter(
+        "embedserve_batch_overload_rejections_total",
+        "Total embed requests rejected because the batch queue is full.",
+        registry=registry,
+    )
+    batch_request_timeouts_total = Counter(
+        "embedserve_batch_request_timeouts_total",
+        "Total embed requests that timed out while waiting for a batch result.",
+        registry=registry,
+    )
+    batch_request_cancellations_total = Counter(
+        "embedserve_batch_request_cancellations_total",
+        "Total embed requests cancelled by clients before completion.",
+        registry=registry,
+    )
+    batch_shutdown_rejections_total = Counter(
+        "embedserve_batch_shutdown_rejections_total",
+        "Total embed requests rejected due to service shutdown.",
+        registry=registry,
+    )
+    batch_inference_failures_total = Counter(
+        "embedserve_batch_inference_failures_total",
+        "Total batch inference execution failures.",
+        registry=registry,
+    )
+
+    for reason in ("max_batch_size", "max_batch_tokens", "timeout", "shutdown"):
+        batch_flush_total.labels(reason=reason)
 
     return AppMetrics(
         registry=registry,
         http_requests_total=http_requests_total,
         http_request_duration_seconds=http_request_duration_seconds,
         app_ready=app_ready,
+        batch_queue_depth=batch_queue_depth,
+        batch_queue_wait_seconds=batch_queue_wait_seconds,
+        batch_size=batch_size,
+        batch_token_count=batch_token_count,
+        batch_flush_total=batch_flush_total,
+        batch_overload_rejections_total=batch_overload_rejections_total,
+        batch_request_timeouts_total=batch_request_timeouts_total,
+        batch_request_cancellations_total=batch_request_cancellations_total,
+        batch_shutdown_rejections_total=batch_shutdown_rejections_total,
+        batch_inference_failures_total=batch_inference_failures_total,
     )
 
 

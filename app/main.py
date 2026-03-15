@@ -15,7 +15,13 @@ from fastapi.responses import JSONResponse, Response
 from starlette.routing import BaseRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.deps import get_metrics, get_runtime, get_settings
+from app.batching import (
+    BatcherQueueFullError,
+    BatcherShuttingDownError,
+    BatchInferenceError,
+    DynamicBatcher,
+)
+from app.deps import get_batcher, get_metrics, get_runtime, get_settings
 from app.determinism import DeterminismPolicyState, apply_determinism_policy
 from app.engine.embedder import RuntimeInitializationError
 from app.logging import configure_logging
@@ -37,6 +43,12 @@ from app.schemas import (
     ReadyResponse,
 )
 from app.settings import Settings
+
+_DETAIL_BATCH_QUEUE_FULL = "Batch queue is full"
+_DETAIL_BATCH_REQUEST_TIMED_OUT = "Embedding request timed out"
+_DETAIL_BATCH_SHUTDOWN = "Service is shutting down"
+_DETAIL_BATCH_INFERENCE_FAILED = "Embedding inference failed"
+_SUBMISSION_POLL_INTERVAL_SECONDS = 0.001
 
 
 def _route_template(request: Request) -> str:
@@ -183,6 +195,20 @@ def _runtime_log_fields(
     }
 
 
+async def _await_submission_result(
+    future: asyncio.Future[EmbedResponse],
+    *,
+    timeout_seconds: float,
+) -> EmbedResponse:
+    deadline = perf_counter() + timeout_seconds
+    while True:
+        if future.done():
+            return future.result()
+        if perf_counter() >= deadline:
+            raise TimeoutError
+        await asyncio.sleep(_SUBMISSION_POLL_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
@@ -197,6 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     runtime_initializer = app.state.runtime_initializer
     determinism: DeterminismPolicyState | None = None
+    batcher: DynamicBatcher | None = None
 
     try:
         determinism = apply_determinism_policy()
@@ -234,8 +261,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     app.state.runtime = runtime
+    if runtime.ready and runtime.embedder is not None:
+        batcher = DynamicBatcher(
+            embedder=runtime.embedder,
+            metrics=metrics,
+            max_batch_size=settings.MAX_BATCH_SIZE,
+            max_batch_tokens=settings.MAX_BATCH_TOKENS,
+            batch_timeout_ms=settings.BATCH_TIMEOUT_MS,
+            max_batch_queue_size=settings.MAX_BATCH_QUEUE_SIZE,
+        )
+        await batcher.start()
+    app.state.batcher = batcher
 
-    yield
+    try:
+        yield
+    finally:
+        if batcher is not None:
+            await batcher.shutdown()
 
 
 def create_app(
@@ -302,19 +344,51 @@ def create_app(
         response_model=EmbedResponse,
         responses={
             503: {
-                "description": "Model runtime is not ready",
+                "description": "Service unavailable",
                 "content": {
                     "application/json": {
-                        "example": {"detail": "Model is not ready: initialization_failed"}
+                        "schema": {
+                            "type": "object",
+                            "required": ["detail"],
+                            "properties": {"detail": {"type": "string"}},
+                        },
+                        "examples": {
+                            "unready": {
+                                "summary": "Model runtime is not ready",
+                                "value": {"detail": "Model is not ready: initialization_failed"},
+                            },
+                            "queue_full": {
+                                "summary": "Batch queue overload",
+                                "value": {"detail": _DETAIL_BATCH_QUEUE_FULL},
+                            },
+                            "request_timeout": {
+                                "summary": "Batch wait timeout",
+                                "value": {"detail": _DETAIL_BATCH_REQUEST_TIMED_OUT},
+                            },
+                            "shutdown": {
+                                "summary": "Service shutdown",
+                                "value": {"detail": _DETAIL_BATCH_SHUTDOWN},
+                            },
+                        },
                     }
                 },
-            }
+            },
+            500: {
+                "description": "Embedding inference failed",
+                "content": {
+                    "application/json": {
+                        "example": {"detail": _DETAIL_BATCH_INFERENCE_FAILED},
+                    }
+                },
+            },
         },
     )
     async def embed(
         payload: EmbedRequest,
         settings: Annotated[Settings, Depends(get_settings)],
         runtime: Annotated[RuntimeState, Depends(get_runtime)],
+        batcher: Annotated[DynamicBatcher | None, Depends(get_batcher)],
+        metrics: Annotated[AppMetrics, Depends(get_metrics)],
     ) -> EmbedResponse:
         actual_inputs = len(payload.inputs)
         if actual_inputs > settings.MAX_INPUTS_PER_REQUEST:
@@ -330,7 +404,46 @@ def create_app(
                 detail=f"Model is not ready: {runtime.reason}",
             )
 
-        return await run_in_threadpool(runtime.embedder.embed, payload.inputs)
+        if batcher is None:
+            metrics.batch_shutdown_rejections_total.inc()
+            raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN)
+
+        try:
+            token_counts = await run_in_threadpool(runtime.embedder.preflight, payload.inputs)
+        except asyncio.CancelledError:
+            raise
+        except RequestValidationError:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=_DETAIL_BATCH_INFERENCE_FAILED) from exc
+
+        try:
+            submission = batcher.submit(payload.inputs, token_counts)
+        except BatcherQueueFullError as exc:
+            metrics.batch_overload_rejections_total.inc()
+            raise HTTPException(status_code=503, detail=_DETAIL_BATCH_QUEUE_FULL) from exc
+        except BatcherShuttingDownError as exc:
+            metrics.batch_shutdown_rejections_total.inc()
+            raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN) from exc
+
+        timeout_seconds = settings.BATCH_REQUEST_TIMEOUT_MS / 1000.0
+        try:
+            return await _await_submission_result(
+                submission.future, timeout_seconds=timeout_seconds
+            )
+        except TimeoutError as exc:
+            batcher.cancel(submission.job_id)
+            metrics.batch_request_timeouts_total.inc()
+            raise HTTPException(status_code=503, detail=_DETAIL_BATCH_REQUEST_TIMED_OUT) from exc
+        except asyncio.CancelledError:
+            batcher.cancel(submission.job_id)
+            metrics.batch_request_cancellations_total.inc()
+            raise
+        except BatcherShuttingDownError as exc:
+            metrics.batch_shutdown_rejections_total.inc()
+            raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN) from exc
+        except BatchInferenceError as exc:
+            raise HTTPException(status_code=500, detail=_DETAIL_BATCH_INFERENCE_FAILED) from exc
 
     return app
 

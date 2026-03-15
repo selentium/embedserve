@@ -18,6 +18,8 @@ class Embedder(Protocol):
     device: str
     dtype: str
 
+    def preflight(self, inputs: list[str]) -> list[int]: ...
+
     def embed(self, inputs: list[str]) -> EmbedResponse: ...
 
 
@@ -62,6 +64,22 @@ class TransformerEmbedder:
         self._output_dtype = output_dtype
         self._output_torch_dtype = output_torch_dtype
         self._lock = threading.Lock()
+
+    def preflight(self, inputs: list[str]) -> list[int]:
+        with self._lock:
+            lengths = self._measure_lengths(inputs)
+            if not self._truncate:
+                for index, length in enumerate(lengths):
+                    if length > self._effective_max_length:
+                        raise _input_too_long_error(
+                            index=index,
+                            actual=length,
+                            limit=self._effective_max_length,
+                            value=inputs[index],
+                        )
+                return lengths
+
+            return [min(length, self._effective_max_length) for length in lengths]
 
     def embed(self, inputs: list[str]) -> EmbedResponse:
         with self._lock:

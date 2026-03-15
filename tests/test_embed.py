@@ -314,3 +314,6 @@ def test_embed_openapi_documents_503_response() -> None:
 
     embed_operation = response.json()["paths"]["/embed"]["post"]
     assert "503" in embed_operation["responses"]
+    response_503 = embed_operation["responses"]["503"]
+    examples = response_503["content"]["application/json"]["examples"]
+    assert set(examples) == {"unready", "queue_full", "request_timeout", "shutdown"}
