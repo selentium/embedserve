@@ -95,6 +95,7 @@ class DynamicBatcher:
         worker_task = self._worker_task
         self._accepting = False
         self._shutdown_requested = True
+        self._drain_with_shutdown()
         with suppress(asyncio.QueueFull):
             self._queue.put_nowait(_ShutdownSignal())
 
@@ -116,7 +117,9 @@ class DynamicBatcher:
                 self._fail_pending_jobs_with_shutdown()
                 self._drain_with_shutdown()
             else:
-                await worker_task
+                while not worker_task.done():
+                    await asyncio.sleep(self._QUEUE_POLL_INTERVAL_SECONDS)
+                worker_task.result()
         else:
             worker_task.result()
 

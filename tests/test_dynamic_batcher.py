@@ -438,6 +438,107 @@ def test_batcher_shutdown_waits_for_non_stoppable_inflight_inference() -> None:
     asyncio.run(run())
 
 
+def test_batcher_shutdown_caller_timeout_does_not_cancel_inflight_worker() -> None:
+    async def run() -> None:
+        metrics = create_metrics()
+        embedder = NonStoppableBlockingEmbedder()
+        batcher = _make_batcher(
+            embedder=embedder,
+            metrics=metrics,
+            max_batch_size=1,
+            max_batch_tokens=100,
+            batch_timeout_ms=1000,
+        )
+        await batcher.start()
+        first: BatchSubmission | None = None
+        try:
+            first = _submit(batcher, text="first", tokens=1)
+            await _wait_until_started(embedder)
+
+            shutdown_timeout = (
+                batcher._SHUTDOWN_WAIT_SECONDS + batcher._SHUTDOWN_GRACE_SECONDS + 0.25
+            )
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(batcher.shutdown(), timeout=shutdown_timeout)
+
+            worker_task = batcher._worker_task
+            assert worker_task is not None
+            assert not worker_task.done()
+            assert not first.future.done()
+
+            embedder.allow_finish.set()
+            await asyncio.wait_for(worker_task, timeout=2)
+
+            first_response = await asyncio.wait_for(first.future, timeout=2)
+            assert first_response.data[0].index == 0
+        finally:
+            embedder.allow_finish.set()
+            if first is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(first.future, timeout=2)
+            if batcher._worker_task is not None and not batcher._worker_task.done():
+                batcher._worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await batcher._worker_task
+            batcher._worker_task = None
+
+    asyncio.run(run())
+
+
+def test_batcher_shutdown_rejects_queued_jobs_before_inflight_completes() -> None:
+    async def run() -> None:
+        metrics = create_metrics()
+        embedder = EventBlockingEmbedder()
+        batcher = _make_batcher(
+            embedder=embedder,
+            metrics=metrics,
+            max_batch_size=1,
+            max_batch_tokens=100,
+            batch_timeout_ms=1000,
+        )
+        await batcher.start()
+        first: BatchSubmission | None = None
+        queued: BatchSubmission | None = None
+        shutdown_task: asyncio.Task[None] | None = None
+        try:
+            first = _submit(batcher, text="first", tokens=1)
+            await _wait_until_started(embedder)
+            queued = _submit(batcher, text="queued", tokens=1)
+
+            shutdown_task = asyncio.create_task(batcher.shutdown())
+            await asyncio.sleep(0.05)
+
+            done, _ = await asyncio.wait({queued.future}, timeout=0.25)
+            assert queued.future in done
+            with pytest.raises(BatcherShuttingDownError):
+                queued.future.result()
+
+            assert not first.future.done()
+
+            embedder.release.set()
+            await asyncio.wait_for(shutdown_task, timeout=2)
+            first_response = await asyncio.wait_for(first.future, timeout=2)
+            assert first_response.data[0].index == 0
+        finally:
+            embedder.release.set()
+            if shutdown_task is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(shutdown_task, timeout=2)
+            if first is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(first.future, timeout=2)
+            if queued is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(queued.future, timeout=2)
+            if batcher._worker_task is not None and not batcher._worker_task.done():
+                batcher._worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await batcher._worker_task
+            batcher._worker_task = None
+
+    asyncio.run(run())
+
+
 def test_batcher_shutdown_does_not_block_when_queue_is_full() -> None:
     async def run() -> None:
         metrics = create_metrics()

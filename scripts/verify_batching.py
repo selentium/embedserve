@@ -54,6 +54,16 @@ class MetricsSnapshot:
     def non_singleton_batches(self) -> float:
         return max(self.batch_size_sum - self.batch_size_count, 0.0)
 
+    def delta_from(self, baseline: MetricsSnapshot) -> MetricsSnapshot:
+        return MetricsSnapshot(
+            batch_size_count=self.batch_size_count - baseline.batch_size_count,
+            batch_size_sum=self.batch_size_sum - baseline.batch_size_sum,
+            batch_token_count_count=(
+                self.batch_token_count_count - baseline.batch_token_count_count
+            ),
+            flush_total=self.flush_total - baseline.flush_total,
+        )
+
 
 def _positive_int(value: str) -> int:
     parsed = int(value)
@@ -206,6 +216,10 @@ async def _run_load(profile: HarnessProfile) -> tuple[list[RequestResult], Metri
     semaphore = asyncio.Semaphore(profile.concurrency)
 
     async with httpx.AsyncClient(limits=limits) as client:
+        baseline_response = await client.get(profile.metrics_url, timeout=profile.timeout_seconds)
+        baseline_response.raise_for_status()
+        baseline_metrics = _parse_metrics(baseline_response.text)
+
         for warmup_index in range(profile.warmup_requests):
             await _execute_request(
                 client=client,
@@ -228,7 +242,7 @@ async def _run_load(profile: HarnessProfile) -> tuple[list[RequestResult], Metri
         metrics_response = await client.get(profile.metrics_url, timeout=profile.timeout_seconds)
         metrics_response.raise_for_status()
 
-    return results, _parse_metrics(metrics_response.text)
+    return results, _parse_metrics(metrics_response.text).delta_from(baseline_metrics)
 
 
 def _build_profile(args: argparse.Namespace) -> HarnessProfile:
