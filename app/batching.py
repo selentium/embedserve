@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Literal
 
-from fastapi.concurrency import run_in_threadpool
+from fastapi.concurrency import run_in_threadpool as _shared_run_in_threadpool
 
 from app.engine.embedder import Embedder
 from app.metrics import AppMetrics
 from app.schemas import EmbeddingItem, EmbedResponse, UsageInfo
 
 FlushReason = Literal["max_batch_size", "max_batch_tokens", "timeout", "shutdown"]
+run_in_threadpool = _shared_run_in_threadpool
 
 
 class BatcherQueueFullError(Exception):
@@ -75,6 +77,7 @@ class DynamicBatcher:
             maxsize=max_batch_queue_size
         )
         self._worker_task: asyncio.Task[None] | None = None
+        self._embed_executor: ThreadPoolExecutor | None = None
         self._embed_inflight = False
         self._accepting = False
         self._shutdown_requested = False
@@ -84,6 +87,11 @@ class DynamicBatcher:
     async def start(self) -> None:
         if self._worker_task is not None:
             return
+        if self._embed_executor is None:
+            self._embed_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="embedserve-batch-infer",
+            )
         self._accepting = True
         self._shutdown_requested = False
         self._worker_task = asyncio.create_task(self._worker(), name="embedserve-batch-worker")
@@ -93,6 +101,7 @@ class DynamicBatcher:
         if self._worker_task is None:
             return
         worker_task = self._worker_task
+        embed_executor = self._embed_executor
         self._accepting = False
         self._shutdown_requested = True
         self._drain_with_shutdown()
@@ -126,6 +135,9 @@ class DynamicBatcher:
         self._worker_task = None
         self._embed_inflight = False
         self._set_queue_depth()
+        if embed_executor is not None:
+            embed_executor.shutdown(wait=True, cancel_futures=False)
+            self._embed_executor = None
 
     def submit(self, inputs: list[str], token_counts: list[int]) -> BatchSubmission:
         if not self._accepting:
@@ -304,7 +316,15 @@ class DynamicBatcher:
 
         self._embed_inflight = True
         try:
-            merged_response = await run_in_threadpool(self._embedder.embed, batch_inputs)
+            loop = asyncio.get_running_loop()
+            embed_executor = self._embed_executor
+            if embed_executor is None:
+                raise RuntimeError("batch embed executor is not running")
+            merged_response = await loop.run_in_executor(
+                embed_executor,
+                self._embedder.embed,
+                batch_inputs,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:

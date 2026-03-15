@@ -143,6 +143,29 @@ def test_make_worktree_create_fails_when_branch_exists(tmp_path: Path) -> None:
     assert "Branch already exists: agent" in result.stderr
 
 
+def test_script_create_rolls_back_worktree_when_setup_fails(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    worktree = tmp_path / "embedserve-agent"
+
+    result = _run(
+        ["bash", "scripts/worktree.sh", "create"],
+        cwd=repo,
+        env={
+            "WORKTREE_NAME": "agent",
+            "SETUP": "1",
+            "COPY_ENV": "0",
+            "SETUP_COMMAND": 'printf "partial\\n" > "$WORKTREE_PATH/.bootstrapped"; false',
+        },
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not worktree.exists()
+    assert _run(["git", "branch", "--list", "agent"], cwd=repo).stdout.strip() == ""
+    worktree_list = _run(["git", "worktree", "list", "--porcelain"], cwd=repo).stdout
+    assert str(worktree) not in worktree_list
+
+
 def test_script_create_does_not_overwrite_existing_worktree_env(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     (repo / ".env").write_text("MODEL_ID=tracked\n", encoding="utf-8")

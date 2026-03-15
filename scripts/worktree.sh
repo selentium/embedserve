@@ -117,6 +117,18 @@ run_setup_if_requested() {
 	eval "$SETUP_COMMAND"
 }
 
+rollback_created_worktree() {
+	if [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ] && is_registered_worktree "$WORKTREE_PATH"; then
+		git worktree remove --force "$WORKTREE_PATH" >/dev/null 2>&1 || true
+	fi
+
+	if [ -n "${WORKTREE_NAME:-}" ] && git show-ref --verify --quiet "refs/heads/$WORKTREE_NAME"; then
+		git branch -D "$WORKTREE_NAME" >/dev/null 2>&1 || true
+	fi
+
+	git worktree prune >/dev/null 2>&1 || true
+}
+
 create_worktree() {
 	if [ -z "${WORKTREE_NAME:-}" ]; then
 		die "WORKTREE is required"
@@ -134,8 +146,14 @@ create_worktree() {
 	ensure_base_ref_exists
 
 	git worktree add -b "$WORKTREE_NAME" "$WORKTREE_PATH" "$BASE_REF"
-	copy_env_if_requested
-	run_setup_if_requested
+	if ! copy_env_if_requested; then
+		rollback_created_worktree
+		return 1
+	fi
+	if ! run_setup_if_requested; then
+		rollback_created_worktree
+		return 1
+	fi
 
 	echo "Created worktree $WORKTREE_NAME at $WORKTREE_PATH"
 }

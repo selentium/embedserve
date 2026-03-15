@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
+import textwrap
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -292,3 +296,142 @@ def test_embed_preserves_fifo_arrival_order_before_preflight_completes(
     assert first_status == 200
     assert second_status == 200
     assert embedder.calls == [["first"], ["second"]]
+
+
+def test_embed_does_not_let_preflight_starve_batch_inference_worker() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import json
+        import os
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        import app.batching as batching_module
+        from app.batching import DynamicBatcher
+        from app.metrics import create_metrics
+        from app.schemas import EmbeddingItem, EmbedResponse, UsageInfo
+
+
+        class ThreadpoolStarvationEmbedder:
+            device = "cpu"
+            dtype = "float32"
+
+            def __init__(self) -> None:
+                self.first_started = threading.Event()
+                self.second_started = threading.Event()
+                self.release_first = threading.Event()
+                self.release_second = threading.Event()
+                self.embed_started = threading.Event()
+
+            def preflight(self, inputs: list[str]) -> list[int]:
+                text = inputs[0]
+                if text == "first":
+                    self.first_started.set()
+                    if not self.release_first.wait(timeout=5.0):
+                        raise AssertionError("first preflight was not released")
+                    return [2]
+                if text == "second":
+                    self.second_started.set()
+                    if not self.release_second.wait(timeout=5.0):
+                        raise AssertionError("second preflight was not released")
+                    return [2]
+                raise AssertionError(f"unexpected inputs: {inputs}")
+
+            def embed(self, inputs: list[str]) -> EmbedResponse:
+                self.embed_started.set()
+                return EmbedResponse(
+                    data=[EmbeddingItem(index=0, embedding=[0.0, float(len(inputs[0]))])],
+                    model="test-model",
+                    revision="1" * 40,
+                    dim=2,
+                    usage=UsageInfo(tokens=2),
+                )
+
+
+        async def main() -> None:
+            embedder = ThreadpoolStarvationEmbedder()
+            executor = ThreadPoolExecutor(max_workers=1)
+            batcher = DynamicBatcher(
+                embedder=embedder,
+                metrics=create_metrics(),
+                max_batch_size=1,
+                max_batch_tokens=100,
+                batch_timeout_ms=1000,
+                max_batch_queue_size=16,
+            )
+
+            async def run_in_limited_pool(func, *args):
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(executor, func, *args)
+
+            original_run_in_threadpool = getattr(batching_module, "run_in_threadpool", None)
+            batching_module.run_in_threadpool = run_in_limited_pool
+            try:
+                await batcher.start()
+                first_preflight = asyncio.create_task(
+                    run_in_limited_pool(embedder.preflight, ["first"])
+                )
+                asyncio.create_task(run_in_limited_pool(embedder.preflight, ["second"]))
+
+                started = await asyncio.to_thread(embedder.first_started.wait, 5.0)
+                if not started:
+                    raise AssertionError("first preflight did not start")
+                embedder.release_first.set()
+                token_counts = await asyncio.wait_for(first_preflight, timeout=1.0)
+                submission = batcher.submit(["first"], token_counts)
+
+                second_started = await asyncio.to_thread(embedder.second_started.wait, 5.0)
+                if not second_started:
+                    raise AssertionError("second preflight did not start")
+
+                try:
+                    response = await asyncio.wait_for(submission.future, timeout=0.2)
+                except TimeoutError:
+                    print(
+                        json.dumps(
+                            {"timed_out": True, "embed_started": embedder.embed_started.is_set()}
+                        ),
+                        flush=True,
+                    )
+                    os._exit(1)
+
+                print(
+                    json.dumps(
+                        {
+                            "timed_out": False,
+                            "embed_started": embedder.embed_started.is_set(),
+                            "embedding": response.data[0].embedding,
+                        }
+                    ),
+                    flush=True,
+                )
+                os._exit(0)
+            finally:
+                if original_run_in_threadpool is None:
+                    del batching_module.run_in_threadpool
+                else:
+                    batching_module.run_in_threadpool = original_run_in_threadpool
+
+
+        asyncio.run(main())
+        """
+    )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "shared preflight work starved batch inference long enough for the repro to hang",
+            pytrace=False,
+        )
+
+    assert result.returncode == 0, result.stdout
