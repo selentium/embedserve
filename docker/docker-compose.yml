@@ -1,0 +1,30 @@
+services:
+  embedserve:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      MODEL_ID: "${MODEL_ID:-sentence-transformers/all-MiniLM-L6-v2}"
+      MODEL_REVISION: "${MODEL_REVISION:-826711e54e001c83835913827a843d8dd0a1def9}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      MAX_INPUTS_PER_REQUEST: "${MAX_INPUTS_PER_REQUEST:-64}"
+      DEVICE: "${DEVICE:-cuda}"
+      DTYPE: "${DTYPE:-float32}"
+      MAX_LENGTH: "${MAX_LENGTH:-512}"
+      TRUNCATE: "${TRUNCATE:-true}"
+      NORMALIZE_EMBEDDINGS: "${NORMALIZE_EMBEDDINGS:-true}"
+      OUTPUT_DTYPE: "${OUTPUT_DTYPE:-float32}"
+      MAX_BATCH_SIZE: "${MAX_BATCH_SIZE:-128}"
+      MAX_BATCH_TOKENS: "${MAX_BATCH_TOKENS:-8192}"
+      BATCH_TIMEOUT_MS: "${BATCH_TIMEOUT_MS:-2}"
+      MAX_BATCH_QUEUE_SIZE: "${MAX_BATCH_QUEUE_SIZE:-1024}"
+      BATCH_REQUEST_TIMEOUT_MS: "${BATCH_REQUEST_TIMEOUT_MS:-5000}"
+      HF_HOME: /var/cache/huggingface
+    gpus: all
+    ports:
+      - "${EMBEDSERVE_PORT:-8000}:8000"
+    volumes:
+      - hf-cache:/var/cache/huggingface
+
+volumes:
+  hf-cache:

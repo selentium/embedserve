@@ -1,4 +1,4 @@
-.PHONY: help bootstrap-dev worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run check
+.PHONY: help bootstrap-dev worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run docker-build docker-up docker-down docker-logs docker-ps docker-health docker-test-request check
 
 VENV := ./venv/bin
 PRE_COMMIT_HOME := /tmp/pre-commit-cache
@@ -33,6 +33,15 @@ VERIFY_BATCHING_BATCH_TIMEOUT_MS ?= 2
 VERIFY_BATCHING_MAX_BATCH_QUEUE_SIZE ?= 1024
 VERIFY_BATCHING_BATCH_REQUEST_TIMEOUT_MS ?= 5000
 VERIFY_BATCHING_ARGS ?=
+DOCKER_COMPOSE_FILE ?= docker/docker-compose.yml
+DOCKER_COMPOSE := docker compose -f $(DOCKER_COMPOSE_FILE)
+DOCKER_SERVICE ?= embedserve
+EMBEDSERVE_PORT ?= 8000
+DOCKER_INTERNAL_HEALTH_URL ?= http://127.0.0.1:8000/readyz
+DOCKER_HEALTH_TIMEOUT_SECONDS ?= 300
+DOCKER_HEALTH_POLL_INTERVAL_SECONDS ?= 5
+DOCKER_INTERNAL_EMBED_URL ?= http://127.0.0.1:8000/embed
+DOCKER_TEST_INPUTS_JSON ?= ["hello world","docker smoke test"]
 
 help:
 	@echo "Available targets:"
@@ -50,6 +59,13 @@ help:
 	@echo "  hadolint          Lint Dockerfiles if present"
 	@echo "  pre-commit-install Install git pre-commit hooks"
 	@echo "  pre-commit-run    Run configured pre-commit hooks on all files"
+	@echo "  docker-build      Build the Docker image via docker compose"
+	@echo "  docker-up         Start the Docker service in the background"
+	@echo "  docker-down       Stop the Docker compose stack"
+	@echo "  docker-logs       Tail Docker service logs"
+	@echo "  docker-ps         Show Docker compose service status"
+	@echo "  docker-health     Poll /readyz until the Docker service is ready"
+	@echo "  docker-test-request Send a sample POST /embed request to Docker"
 	@echo "  check             Run lint + typecheck + test"
 
 bootstrap-dev:
@@ -138,5 +154,54 @@ pre-commit-install:
 
 pre-commit-run:
 	PRE_COMMIT_HOME=$(PRE_COMMIT_HOME) $(VENV)/pre-commit run --all-files
+
+docker-build:
+	@$(DOCKER_COMPOSE) build $(DOCKER_SERVICE)
+
+docker-up:
+	@$(DOCKER_COMPOSE) up --detach $(DOCKER_SERVICE)
+
+docker-down:
+	@$(DOCKER_COMPOSE) down
+
+docker-logs:
+	@$(DOCKER_COMPOSE) logs --tail=100 --follow $(DOCKER_SERVICE)
+
+docker-ps:
+	@$(DOCKER_COMPOSE) ps
+
+docker-health:
+	@container_id="$$( $(DOCKER_COMPOSE) ps -q $(DOCKER_SERVICE) )"; \
+	if [ -z "$$container_id" ]; then \
+		echo "No container found for service $(DOCKER_SERVICE)" >&2; \
+		exit 1; \
+	fi; \
+	if [ "$$(docker inspect --format '{{.State.Running}}' "$$container_id")" != "true" ]; then \
+		echo "Service $(DOCKER_SERVICE) is not running" >&2; \
+		exit 1; \
+	fi; \
+	start_time="$$(date +%s)"; \
+	while :; do \
+		health_status="$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$$container_id")"; \
+		if [ "$$health_status" = "healthy" ]; then \
+			$(DOCKER_COMPOSE) exec -T $(DOCKER_SERVICE) curl --fail --silent "$(DOCKER_INTERNAL_HEALTH_URL)"; \
+			exit 0; \
+		fi; \
+		if [ "$$health_status" = "unhealthy" ]; then \
+			echo "Service $(DOCKER_SERVICE) reported unhealthy" >&2; \
+			exit 1; \
+		fi; \
+		if [ "$$(( $$(date +%s) - start_time ))" -ge "$(DOCKER_HEALTH_TIMEOUT_SECONDS)" ]; then \
+			echo "Timed out waiting for service $(DOCKER_SERVICE) to become healthy" >&2; \
+			exit 1; \
+		fi; \
+		sleep "$(DOCKER_HEALTH_POLL_INTERVAL_SECONDS)"; \
+	done
+
+docker-test-request:
+	@$(DOCKER_COMPOSE) exec -T \
+		-e DOCKER_INTERNAL_EMBED_URL="$(DOCKER_INTERNAL_EMBED_URL)" \
+		-e DOCKER_TEST_INPUTS_JSON='$(DOCKER_TEST_INPUTS_JSON)' \
+		$(DOCKER_SERVICE) python -c 'exec("""import json\nimport os\nfrom urllib import request\n\npayload = json.dumps({\"inputs\": json.loads(os.environ[\"DOCKER_TEST_INPUTS_JSON\"])}).encode(\"utf-8\")\nreq = request.Request(\n    os.environ[\"DOCKER_INTERNAL_EMBED_URL\"],\n    data=payload,\n    headers={\"Content-Type\": \"application/json\"},\n    method=\"POST\",\n)\nwith request.urlopen(req, timeout=10) as response:\n    print(response.read().decode(\"utf-8\"))\n""")'
 
 check: lint typecheck test

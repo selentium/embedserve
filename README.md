@@ -1,8 +1,8 @@
-# EmbedServe (Milestone 4)
+# EmbedServe (Milestone 5)
 
 EmbedServe is a FastAPI embedding service that runs dynamically batched Hugging Face encoder inference with a pinned model revision.
 
-Milestone 4 keeps the Milestone 3 response schema stable, adds always-on FIFO dynamic batching for `POST /embed`, and keeps the determinism verification workflow.
+Milestone 5 keeps the Milestone 4 API and batching behavior, adds a Dockerized GPU deployment workflow, pins the Python dependency set, and documents the host prerequisites required to reproduce the runtime stack on a clean machine.
 
 ## Current behavior
 
@@ -47,6 +47,75 @@ Intentional failure example (impossible cosine threshold > 1.0) to confirm non-z
 ```bash
 make verify-determinism VERIFY_DETERMINISM_ARGS="--min-cosine-similarity 1.0001"
 ```
+
+## Docker Quickstart
+
+The Docker workflow targets a local Linux host with an NVIDIA GPU. The checked-in compose file defaults `DEVICE=cuda`, persists the Hugging Face cache in a named volume, and keeps the container unhealthy until `/readyz` succeeds after model initialization and warmup.
+
+### Host prerequisites
+
+- Docker Engine with Docker Compose v2
+- NVIDIA GPU with a driver compatible with CUDA 12.6
+- NVIDIA Container Toolkit configured for Docker
+- outbound network access to Hugging Face on first startup when the cache is empty
+
+Quick host-side sanity check before building:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 nvidia-smi
+```
+
+Primary Docker workflow:
+
+```bash
+make docker-build
+make docker-up
+make docker-health
+make docker-test-request
+```
+
+Inspect logs or stop the stack:
+
+```bash
+make docker-logs
+make docker-down
+```
+
+The Make targets wrap the checked-in compose file at `docker/docker-compose.yml`. If you need the equivalent raw commands:
+
+```bash
+docker compose -f docker/docker-compose.yml build embedserve
+docker compose -f docker/docker-compose.yml up --detach embedserve
+docker compose -f docker/docker-compose.yml down
+```
+
+The smoke helpers avoid host Python dependencies:
+
+- `make docker-health` waits on the container health status and confirms `/readyz` from inside the container.
+- `make docker-test-request` executes the sample `POST /embed` call from inside the running container.
+
+### Startup notes
+
+- `GET /healthz` is process liveness only and can return `200` before the model is ready.
+- `GET /readyz` is the Docker healthcheck target and only returns `200` after model load and the startup warmup embed succeed.
+- The first container startup may spend significant time downloading the pinned model revision into `/var/cache/huggingface`.
+- Subsequent restarts reuse the named `hf-cache` Docker volume and should not re-download the model unless the volume is removed.
+
+### Docker configuration defaults
+
+Compose reads runtime settings from environment variables with defaults baked into `docker/docker-compose.yml`. The tracked `.env.example` stays compatible with the local `make start` flow, so Docker falls back to its own `cuda` default unless you override `DEVICE` in `.env`.
+
+- `EMBEDSERVE_PORT=8000`
+- `DEVICE=cuda` when unset in `.env`
+- `DTYPE=float32`
+- `MODEL_ID=sentence-transformers/all-MiniLM-L6-v2`
+- `MODEL_REVISION=826711e54e001c83835913827a843d8dd0a1def9`
+
+Known non-portable pieces:
+
+- NVIDIA driver and container toolkit compatibility are host-specific.
+- Embedding values are not portable across different GPUs, drivers, or low-level runtime versions.
+- First boot requires network access to Hugging Face if the model cache volume is empty.
 
 ## Configuration
 
@@ -265,8 +334,9 @@ For a local developer setup, run:
 make bootstrap-dev
 ```
 
-That creates `venv/`, installs both runtime and dev dependencies, and installs the repo's
-pre-commit hooks.
+That creates `venv/`, installs the pinned runtime and dev dependencies, and installs the repo's pre-commit hooks. The repo now standardizes on Python 3.10 for both local and Docker workflows.
+
+The local runtime lock stays portable across developer hosts. The Docker image layers Linux/CUDA-specific pins from `docker/requirements.cuda-linux.txt` on top of `requirements.txt`.
 
 ## Worktrees
 
