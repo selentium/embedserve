@@ -1,8 +1,8 @@
-# EmbedServe (Milestone 4)
+# EmbedServe (Milestone 6)
 
 EmbedServe is a FastAPI embedding service that runs dynamically batched Hugging Face encoder inference with a pinned model revision.
 
-Milestone 4 keeps the Milestone 3 response schema stable, adds always-on FIFO dynamic batching for `POST /embed`, and keeps the determinism verification workflow.
+Milestone 6 keeps the earlier API and batching behavior, adds live verification harnesses, and adds a repeatable benchmark workflow with a dedicated benchmark report.
 
 ## Current behavior
 
@@ -256,6 +256,27 @@ The harness profile captures:
 - input shape (`--inputs-per-request`, `--input-token-count`)
 - warmup count
 - batching settings (`MAX_BATCH_SIZE`, `MAX_BATCH_TOKENS`, `BATCH_TIMEOUT_MS`, `MAX_BATCH_QUEUE_SIZE`, `BATCH_REQUEST_TIMEOUT_MS`)
+
+## Benchmark Harness
+
+Run the repeatable benchmark harness against a live server:
+
+```bash
+make bench-10k BENCH_10K_ARGS="--json"
+```
+
+The benchmark profile captures:
+
+- hardware identifier
+- label (`batched` or `no_batching`)
+- model and revision
+- device and dtype
+- tokenization settings (`MAX_LENGTH`, `TRUNCATE`)
+- batching settings
+- total texts, request shape, concurrency, timeout, and warmup policy
+- whether the reported run used warm cache, warm model, and warm container
+
+The fixed report format and comparison method live in `BENCHMARK.md`.
 
 ## Install
 
