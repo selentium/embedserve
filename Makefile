@@ -58,7 +58,7 @@ help:
 	@echo "  test              Run pytest (with coverage from pyproject.toml)"
 	@echo "  verify-determinism Run live determinism verification against /embed"
 	@echo "  verify-batching   Run live batching acceptance verification"
-	@echo "  audit             Audit dev dependencies for known vulnerabilities"
+	@echo "  audit             Audit runtime and dev dependency lockfiles for known vulnerabilities"
 	@echo "  hadolint          Lint Dockerfiles if present"
 	@echo "  pre-commit-install Install git pre-commit hooks"
 	@echo "  pre-commit-run    Run configured pre-commit hooks on all files"
@@ -164,7 +164,9 @@ verify-batching:
 		$(VERIFY_BATCHING_ARGS)
 
 audit:
+	$(VENV)/pip-audit -r requirements.txt
 	$(VENV)/pip-audit -r dev-requirements.txt
+	$(VENV)/pip-audit -r docker/requirements.cuda-linux.txt
 
 hadolint:
 	@if command -v hadolint >/dev/null 2>&1; then \

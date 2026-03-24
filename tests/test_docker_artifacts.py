@@ -180,6 +180,9 @@ def test_makefile_exposes_docker_wrapper_targets() -> None:
         "$(PIP_COMPILE) --upgrade --output-file dev-requirements.txt dev-requirements.in"
         in makefile
     )
+    assert "$(VENV)/pip-audit -r requirements.txt" in makefile
+    assert "$(VENV)/pip-audit -r dev-requirements.txt" in makefile
+    assert "$(VENV)/pip-audit -r docker/requirements.cuda-linux.txt" in makefile
     assert "docker inspect --format" in makefile
     assert "@$(DOCKER_COMPOSE) exec -T \\" in makefile
     assert '-e DOCKER_INTERNAL_EMBED_URL="$(DOCKER_INTERNAL_EMBED_URL)"' in makefile
