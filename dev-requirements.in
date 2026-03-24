@@ -1,0 +1,9 @@
+-c requirements.txt
+mypy
+pip-audit
+pip-tools
+pre-commit
+pytest
+pytest-cov
+PyYAML
+ruff

@@ -1,8 +1,9 @@
-.PHONY: help bootstrap-dev worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run docker-build docker-up docker-down docker-logs docker-ps docker-health docker-test-request check
+.PHONY: help bootstrap-dev deps-compile deps-upgrade worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run docker-build docker-up docker-down docker-logs docker-ps docker-health docker-test-request check
 
 VENV := ./venv/bin
 PRE_COMMIT_HOME := /tmp/pre-commit-cache
 PYTHON ?= python3
+PIP_COMPILE := $(VENV)/python -m piptools compile
 WORKTREE ?=
 BASE ?= HEAD
 WORKTREE_PATH ?=
@@ -46,6 +47,8 @@ DOCKER_TEST_INPUTS_JSON ?= ["hello world","docker smoke test"]
 help:
 	@echo "Available targets:"
 	@echo "  bootstrap-dev     Create local venv, install deps, install pre-commit hooks"
+	@echo "  deps-compile      Regenerate pinned requirements from *.in sources"
+	@echo "  deps-upgrade      Refresh pinned requirements to latest compatible versions"
 	@echo "  worktree-create   Create a sibling git worktree on a new branch"
 	@echo "  worktree-remove   Remove a git worktree safely"
 	@echo "  start             Start API server (loads .env if present)"
@@ -73,6 +76,28 @@ bootstrap-dev:
 	$(VENV)/python -m pip install --upgrade pip
 	$(VENV)/python -m pip install -r requirements.txt -r dev-requirements.txt
 	$(MAKE) pre-commit-install
+
+deps-compile:
+	@tmp_requirements="$$(mktemp)"; \
+	$(PIP_COMPILE) --output-file "$$tmp_requirements" requirements.in; \
+	$(VENV)/python scripts/filter_portable_requirements.py "$$tmp_requirements" requirements.txt; \
+	rm -f "$$tmp_requirements"
+	$(PIP_COMPILE) --output-file dev-requirements.txt dev-requirements.in
+	@tmp_requirements="$$(mktemp)"; \
+	$(PIP_COMPILE) --output-file "$$tmp_requirements" docker/requirements.cuda-linux.in; \
+	$(VENV)/python scripts/filter_cuda_overlay_requirements.py "$$tmp_requirements" docker/requirements.cuda-linux.txt; \
+	rm -f "$$tmp_requirements"
+
+deps-upgrade:
+	@tmp_requirements="$$(mktemp)"; \
+	$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" requirements.in; \
+	$(VENV)/python scripts/filter_portable_requirements.py "$$tmp_requirements" requirements.txt; \
+	rm -f "$$tmp_requirements"
+	$(PIP_COMPILE) --upgrade --output-file dev-requirements.txt dev-requirements.in
+	@tmp_requirements="$$(mktemp)"; \
+	$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" docker/requirements.cuda-linux.in; \
+	$(VENV)/python scripts/filter_cuda_overlay_requirements.py "$$tmp_requirements" docker/requirements.cuda-linux.txt; \
+	rm -f "$$tmp_requirements"
 
 worktree-create:
 	@WORKTREE_NAME="$(WORKTREE)" \

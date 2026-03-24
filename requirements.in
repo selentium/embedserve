@@ -1,0 +1,8 @@
+fastapi
+httpx
+prometheus_client
+pydantic
+pydantic-settings
+torch
+transformers
+uvicorn

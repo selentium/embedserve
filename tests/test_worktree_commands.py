@@ -42,7 +42,9 @@ def _copy_worktree_files(repo: Path) -> None:
     shutil.copy2(REPO_ROOT / "Makefile", repo / "Makefile")
     shutil.copy2(REPO_ROOT / "scripts" / "worktree.sh", scripts_dir / "worktree.sh")
     shutil.copy2(REPO_ROOT / ".pre-commit-config.yaml", repo / ".pre-commit-config.yaml")
+    shutil.copy2(REPO_ROOT / "requirements.in", repo / "requirements.in")
     shutil.copy2(REPO_ROOT / "requirements.txt", repo / "requirements.txt")
+    shutil.copy2(REPO_ROOT / "dev-requirements.in", repo / "dev-requirements.in")
     shutil.copy2(REPO_ROOT / "dev-requirements.txt", repo / "dev-requirements.txt")
 
 

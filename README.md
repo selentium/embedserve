@@ -336,7 +336,41 @@ make bootstrap-dev
 
 That creates `venv/`, installs the pinned runtime and dev dependencies, and installs the repo's pre-commit hooks. The repo now standardizes on Python 3.10 for both local and Docker workflows.
 
-The local runtime lock stays portable across developer hosts. The Docker image layers Linux/CUDA-specific pins from `docker/requirements.cuda-linux.txt` on top of `requirements.txt`.
+## Dependency Management
+
+The repo now uses `.in` files as the human-edited dependency inputs and committed `.txt` lockfiles as the reproducible install artifacts.
+
+Edit these files directly:
+
+- `requirements.in` for direct runtime dependencies
+- `dev-requirements.in` for direct dev tooling
+- `docker/requirements.cuda-linux.in` for the Linux/CUDA overlay input
+
+Generated files:
+
+- `requirements.txt` is the portable runtime lockfile used by local bootstrap
+- `dev-requirements.txt` is the pinned dev-tools lockfile
+- `docker/requirements.cuda-linux.txt` is the Docker CUDA overlay lockfile used by `docker/Dockerfile`
+
+The generation flow is:
+
+1. `pip-compile` resolves a full lockfile from each `.in` file.
+2. `scripts/filter_portable_requirements.py` removes CUDA-only packages from the runtime lockfile so `requirements.txt` stays portable.
+3. `scripts/filter_cuda_overlay_requirements.py` keeps only the CUDA runtime packages plus `torch` and `triton`, then writes `docker/requirements.cuda-linux.txt` with `-r ../requirements.txt` so the Docker image installs the portable base plus the CUDA overlay.
+
+After changing any `.in` file, regenerate the lockfiles without changing already-pinned versions:
+
+```bash
+make deps-compile
+```
+
+Use this only when you intentionally want to refresh pinned versions:
+
+```bash
+make deps-upgrade
+```
+
+Do not edit `requirements.txt`, `dev-requirements.txt`, or `docker/requirements.cuda-linux.txt` by hand unless you are debugging the generation workflow itself.
 
 ## Worktrees
 
