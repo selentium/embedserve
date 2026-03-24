@@ -26,12 +26,12 @@ RUN python3 -m venv /opt/venv
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-COPY docker/requirements.cuda-linux.txt /app/docker/requirements.cuda-linux.txt
+COPY requirements.cuda-linux.txt /app/requirements.cuda-linux.txt
 
 RUN pip install \
         --index-url https://download.pytorch.org/whl/cu126 \
         --extra-index-url https://pypi.org/simple \
-        --requirement /app/docker/requirements.cuda-linux.txt
+        --requirement /app/requirements.cuda-linux.txt
 
 COPY app /app/app
 

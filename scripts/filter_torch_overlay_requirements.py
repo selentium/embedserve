@@ -5,8 +5,7 @@ import sys
 from pathlib import Path
 
 _REQUIREMENT_NAME_PATTERN = re.compile(r"^([A-Za-z0-9_.-]+)(?:\[[A-Za-z0-9_.,-]+\])?==")
-_KEEP_PREFIXES = ("cuda-", "nvidia-")
-_KEEP_NAMES = {"torch", "triton"}
+_KEEP_NAMES = {"torch"}
 
 
 def _requirement_name(line: str) -> str | None:
@@ -14,13 +13,6 @@ def _requirement_name(line: str) -> str | None:
     if match is None:
         return None
     return match.group(1).lower().replace("_", "-")
-
-
-def _should_keep(requirement_line: str) -> bool:
-    normalized_name = _requirement_name(requirement_line)
-    if normalized_name is None:
-        return False
-    return normalized_name.startswith(_KEEP_PREFIXES) or normalized_name in _KEEP_NAMES
 
 
 def _split_prefix_and_blocks(lines: list[str]) -> tuple[list[str], list[list[str]]]:
@@ -55,7 +47,7 @@ def _split_prefix_and_blocks(lines: list[str]) -> tuple[list[str], list[list[str
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         print(
-            "usage: python scripts/filter_cuda_overlay_requirements.py INPUT OUTPUT BASE_REQUIREMENTS_PATH",
+            "usage: python scripts/filter_torch_overlay_requirements.py INPUT OUTPUT BASE_REQUIREMENTS_PATH",
             file=sys.stderr,
         )
         return 1
@@ -72,7 +64,7 @@ def main(argv: list[str]) -> int:
     output_lines.append(f"-r {base_requirements_path}\n")
 
     for block in blocks:
-        if _should_keep(block[0]):
+        if _requirement_name(block[0]) in _KEEP_NAMES:
             output_lines.extend(block)
 
     output_path.write_text("".join(output_lines), encoding="utf-8")

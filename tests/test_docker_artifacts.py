@@ -18,19 +18,29 @@ def _read_lines(path: Path) -> list[str]:
 
 def test_requirements_files_are_exact_pins() -> None:
     requirement_pattern = re.compile(
-        r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?==[A-Za-z0-9_.+-]+$"
+        r'^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?==[A-Za-z0-9_.+-]+(?: ; sys_platform != "linux")?$'
     )
+    directive_pattern = re.compile(r"^(?:--(?:index|extra-index)-url \S+|-r .+)$")
 
-    for relative_path in ("requirements.txt", "dev-requirements.txt"):
+    for relative_path in (
+        "requirements.txt",
+        "requirements.cpu-linux.txt",
+        "requirements.cuda-linux.txt",
+        "dev-requirements.txt",
+    ):
         lines = _read_lines(REPO_ROOT / relative_path)
         assert lines, f"{relative_path} should not be empty"
-        assert all(requirement_pattern.fullmatch(line) for line in lines), relative_path
+        assert all(
+            requirement_pattern.fullmatch(line) or directive_pattern.fullmatch(line)
+            for line in lines
+        ), relative_path
 
 
 def test_dependency_input_files_capture_human_edited_direct_dependencies() -> None:
     runtime_lines = _read_lines(REPO_ROOT / "requirements.in")
+    cpu_linux_lines = _read_lines(REPO_ROOT / "requirements.cpu-linux.in")
     dev_lines = _read_lines(REPO_ROOT / "dev-requirements.in")
-    docker_lines = _read_lines(REPO_ROOT / "docker" / "requirements.cuda-linux.in")
+    cuda_linux_lines = _read_lines(REPO_ROOT / "requirements.cuda-linux.in")
 
     assert "fastapi" in runtime_lines
     assert "pydantic" in runtime_lines
@@ -39,53 +49,75 @@ def test_dependency_input_files_capture_human_edited_direct_dependencies() -> No
     assert "transformers" in runtime_lines
     assert "uvicorn" in runtime_lines
 
+    assert "--extra-index-url https://download.pytorch.org/whl/cpu" in cpu_linux_lines
+    assert "-r requirements.txt" in cpu_linux_lines
+    assert "torch==2.9.1+cpu" in cpu_linux_lines
+
     assert "-c requirements.txt" in dev_lines
     assert "pip-tools" in dev_lines
     assert "pytest" in dev_lines
     assert "PyYAML" in dev_lines
 
-    assert "--index-url https://download.pytorch.org/whl/cu126" in docker_lines
-    assert "--extra-index-url https://pypi.org/simple" in docker_lines
-    assert "-r ../requirements.txt" in docker_lines
-    assert "torch==2.9.1+cu126" in docker_lines
+    assert "--index-url https://download.pytorch.org/whl/cu126" in cuda_linux_lines
+    assert "--extra-index-url https://pypi.org/simple" in cuda_linux_lines
+    assert "-r requirements.txt" in cuda_linux_lines
+    assert "torch==2.9.1+cu126" in cuda_linux_lines
 
 
 def test_generated_requirements_files_include_pip_compile_header() -> None:
     for relative_path in (
         "requirements.txt",
+        "requirements.cpu-linux.txt",
+        "requirements.cuda-linux.txt",
         "dev-requirements.txt",
-        "docker/requirements.cuda-linux.txt",
     ):
         contents = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
         assert "pip-compile" in contents, relative_path
 
 
-def test_docker_requirements_extend_base_runtime_with_linux_cuda_pins() -> None:
+def test_linux_cuda_requirements_extend_base_runtime_with_cuda_pins() -> None:
     requirement_pattern = re.compile(
         r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?==[A-Za-z0-9_.+-]+$"
     )
 
-    lines = _read_lines(REPO_ROOT / "docker" / "requirements.cuda-linux.txt")
+    lines = _read_lines(REPO_ROOT / "requirements.cuda-linux.txt")
 
     assert lines[0] == "--index-url https://download.pytorch.org/whl/cu126"
     assert lines[1] == "--extra-index-url https://pypi.org/simple"
-    assert lines[2] == "-r ../requirements.txt"
+    assert lines[2] == "-r requirements.txt"
     assert all(requirement_pattern.fullmatch(line) for line in lines[3:])
     assert "torch==2.9.1+cu126" in lines
     assert "nvidia-cudnn-cu12==9.10.2.21" in lines
     assert "triton==3.5.1" in lines
 
 
+def test_linux_cpu_requirements_extend_base_runtime_with_cpu_torch_pin() -> None:
+    requirement_pattern = re.compile(
+        r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?==[A-Za-z0-9_.+-]+$"
+    )
+
+    lines = _read_lines(REPO_ROOT / "requirements.cpu-linux.txt")
+
+    assert lines[0] == "--extra-index-url https://download.pytorch.org/whl/cpu"
+    assert lines[1] == "-r requirements.txt"
+    assert all(requirement_pattern.fullmatch(line) for line in lines[2:])
+    assert "torch==2.9.1+cpu" in lines
+
+
 def test_portable_runtime_requirements_exclude_linux_cuda_only_packages() -> None:
     lines = _read_lines(REPO_ROOT / "requirements.txt")
 
     for requirement in (
+        "torch==2.9.1+cpu",
         "torch==2.9.1+cu126",
+        "cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.2",
         "nvidia-cublas-cu12==12.6.4.1",
         "nvidia-cudnn-cu12==9.10.2.21",
         "triton==3.5.1",
     ):
         assert requirement not in lines
+    torch_line = next(line for line in lines if line.startswith("torch=="))
+    assert re.fullmatch(r'torch==[A-Za-z0-9_.+-]+ ; sys_platform != "linux"', torch_line)
 
 
 def test_portable_requirements_filter_script_excludes_cuda_runtime_dependencies() -> None:
@@ -93,8 +125,23 @@ def test_portable_requirements_filter_script_excludes_cuda_runtime_dependencies(
         encoding="utf-8"
     )
 
-    assert '_EXCLUDED_PREFIXES = ("nvidia-",)' in filter_script
+    assert '_EXCLUDED_PREFIXES = ("cuda-", "nvidia-")' in filter_script
     assert '_EXCLUDED_NAMES = {"triton"}' in filter_script
+    assert '_TORCH_NAME = "torch"' in filter_script
+    assert 'sys_platform != "linux"' in filter_script
+
+
+def test_torch_overlay_filter_script_keeps_only_torch_requirement() -> None:
+    filter_script = (REPO_ROOT / "scripts" / "filter_torch_overlay_requirements.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '_KEEP_NAMES = {"torch"}' in filter_script
+    assert (
+        "usage: python scripts/filter_torch_overlay_requirements.py INPUT OUTPUT BASE_REQUIREMENTS_PATH"
+        in filter_script
+    )
+    assert 'output_lines.append(f"-r {base_requirements_path}\\n")' in filter_script
 
 
 def test_cuda_overlay_filter_script_keeps_only_cuda_runtime_dependencies() -> None:
@@ -102,9 +149,13 @@ def test_cuda_overlay_filter_script_keeps_only_cuda_runtime_dependencies() -> No
         encoding="utf-8"
     )
 
-    assert '_KEEP_PREFIXES = ("nvidia-",)' in filter_script
+    assert '_KEEP_PREFIXES = ("cuda-", "nvidia-")' in filter_script
     assert '_KEEP_NAMES = {"torch", "triton"}' in filter_script
-    assert "-r ../requirements.txt\\n" in filter_script
+    assert (
+        "usage: python scripts/filter_cuda_overlay_requirements.py INPUT OUTPUT BASE_REQUIREMENTS_PATH"
+        in filter_script
+    )
+    assert 'output_lines.append(f"-r {base_requirements_path}\\n")' in filter_script
 
 
 def test_pyproject_targets_python_310() -> None:
@@ -120,13 +171,10 @@ def test_dockerfile_uses_cuda_runtime_and_readiness_healthcheck() -> None:
     assert "FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04" in dockerfile
     assert "python3-venv" in dockerfile
     assert "HF_HOME=/var/cache/huggingface" in dockerfile
-    assert (
-        "COPY docker/requirements.cuda-linux.txt /app/docker/requirements.cuda-linux.txt"
-        in dockerfile
-    )
+    assert "COPY requirements.cuda-linux.txt /app/requirements.cuda-linux.txt" in dockerfile
     assert "--index-url https://download.pytorch.org/whl/cu126" in dockerfile
     assert "pip install \\" in dockerfile
-    assert "--requirement /app/docker/requirements.cuda-linux.txt" in dockerfile
+    assert "--requirement /app/requirements.cuda-linux.txt" in dockerfile
     assert "HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=12" in dockerfile
     assert "http://127.0.0.1:8000/readyz" in dockerfile
     assert "USER appuser" in dockerfile
@@ -172,17 +220,41 @@ def test_makefile_exposes_docker_wrapper_targets() -> None:
         'scripts/filter_portable_requirements.py "$$tmp_requirements" requirements.txt' in makefile
     )
     assert (
+        'scripts/filter_torch_overlay_requirements.py "$$tmp_requirements" '
+        "requirements.cpu-linux.txt requirements.txt"
+    ) in makefile
+    assert (
         'scripts/filter_cuda_overlay_requirements.py "$$tmp_requirements" '
-        "docker/requirements.cuda-linux.txt"
+        "requirements.cuda-linux.txt requirements.txt"
     ) in makefile
     assert "$(PIP_COMPILE) --output-file dev-requirements.txt dev-requirements.in" in makefile
+    assert '$(PIP_COMPILE) --output-file "$$tmp_requirements" requirements.cpu-linux.in' in makefile
+    assert (
+        '$(PIP_COMPILE) --output-file "$$tmp_requirements" requirements.cuda-linux.in' in makefile
+    )
     assert (
         "$(PIP_COMPILE) --upgrade --output-file dev-requirements.txt dev-requirements.in"
         in makefile
     )
+    assert (
+        '$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" requirements.cpu-linux.in'
+        in makefile
+    )
+    assert (
+        '$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" requirements.cuda-linux.in'
+        in makefile
+    )
     assert "$(VENV)/pip-audit -r requirements.txt" in makefile
+    assert "$(VENV)/pip-audit -r requirements.cpu-linux.txt" in makefile
+    assert "$(VENV)/pip-audit -r requirements.cuda-linux.txt" in makefile
+    assert "TORCH_VARIANT ?= auto" in makefile
+    assert 'if [ "$$(uname -s)" = "Linux" ]; then \\' in makefile
+    assert "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1" in makefile
+    assert "torch_requirements=requirements.cpu-linux.txt" in makefile
+    assert "torch_requirements=requirements.cuda-linux.txt" in makefile
+    assert '$(VENV)/python -m pip install -r "$$torch_requirements"' in makefile
     assert "$(VENV)/pip-audit -r dev-requirements.txt" in makefile
-    assert "$(VENV)/pip-audit -r docker/requirements.cuda-linux.txt" in makefile
+    assert "trap 'rm -f \"$$tmp_requirements\"' EXIT" in makefile
     assert "docker inspect --format" in makefile
     assert "@$(DOCKER_COMPOSE) exec -T \\" in makefile
     assert '-e DOCKER_INTERNAL_EMBED_URL="$(DOCKER_INTERNAL_EMBED_URL)"' in makefile
@@ -197,5 +269,5 @@ def test_dockerignore_and_env_example_capture_local_docker_contract() -> None:
     assert "venv/" in dockerignore
     assert ".env" in dockerignore
     assert "tests/" in dockerignore
-    assert "DEVICE=cpu" in env_example
+    assert all(not line.startswith("DEVICE=") for line in env_example)
     assert "EMBEDSERVE_PORT=8000" in env_example

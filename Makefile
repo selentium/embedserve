@@ -3,6 +3,7 @@
 VENV := ./venv/bin
 PRE_COMMIT_HOME := /tmp/pre-commit-cache
 PYTHON ?= python3
+TORCH_VARIANT ?= auto
 PIP_COMPILE := $(VENV)/python -m piptools compile
 WORKTREE ?=
 BASE ?= HEAD
@@ -46,7 +47,7 @@ DOCKER_TEST_INPUTS_JSON ?= ["hello world","docker smoke test"]
 
 help:
 	@echo "Available targets:"
-	@echo "  bootstrap-dev     Create local venv, install deps, install pre-commit hooks"
+	@echo "  bootstrap-dev     Create local venv, install deps, select Linux Torch overlay, install pre-commit hooks"
 	@echo "  deps-compile      Regenerate pinned requirements from *.in sources"
 	@echo "  deps-upgrade      Refresh pinned requirements to latest compatible versions"
 	@echo "  worktree-create   Create a sibling git worktree on a new branch"
@@ -75,29 +76,62 @@ bootstrap-dev:
 	$(PYTHON) -m venv venv
 	$(VENV)/python -m pip install --upgrade pip
 	$(VENV)/python -m pip install -r requirements.txt -r dev-requirements.txt
+	@if [ "$$(uname -s)" = "Linux" ]; then \
+		case "$(TORCH_VARIANT)" in \
+			auto) \
+				if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then \
+					torch_requirements=requirements.cuda-linux.txt; \
+				else \
+					torch_requirements=requirements.cpu-linux.txt; \
+				fi \
+				;; \
+			cpu) torch_requirements=requirements.cpu-linux.txt ;; \
+			cuda) torch_requirements=requirements.cuda-linux.txt ;; \
+			*) \
+				echo "Unsupported TORCH_VARIANT=$(TORCH_VARIANT); expected auto, cpu, or cuda" >&2; \
+				exit 1 \
+				;; \
+		esac; \
+		echo "Installing Linux Torch overlay: $$torch_requirements"; \
+		$(VENV)/python -m pip install -r "$$torch_requirements"; \
+	fi
 	$(MAKE) pre-commit-install
 
 deps-compile:
-	@tmp_requirements="$$(mktemp)"; \
+	@set -e; \
+	tmp_requirements="$$(mktemp)"; \
+	trap 'rm -f "$$tmp_requirements"' EXIT; \
 	$(PIP_COMPILE) --output-file "$$tmp_requirements" requirements.in; \
-	$(VENV)/python scripts/filter_portable_requirements.py "$$tmp_requirements" requirements.txt; \
-	rm -f "$$tmp_requirements"
+	$(VENV)/python scripts/filter_portable_requirements.py "$$tmp_requirements" requirements.txt
 	$(PIP_COMPILE) --output-file dev-requirements.txt dev-requirements.in
-	@tmp_requirements="$$(mktemp)"; \
-	$(PIP_COMPILE) --output-file "$$tmp_requirements" docker/requirements.cuda-linux.in; \
-	$(VENV)/python scripts/filter_cuda_overlay_requirements.py "$$tmp_requirements" docker/requirements.cuda-linux.txt; \
-	rm -f "$$tmp_requirements"
+	@set -e; \
+	tmp_requirements="$$(mktemp)"; \
+	trap 'rm -f "$$tmp_requirements"' EXIT; \
+	$(PIP_COMPILE) --output-file "$$tmp_requirements" requirements.cpu-linux.in; \
+	$(VENV)/python scripts/filter_torch_overlay_requirements.py "$$tmp_requirements" requirements.cpu-linux.txt requirements.txt
+	@set -e; \
+	tmp_requirements="$$(mktemp)"; \
+	trap 'rm -f "$$tmp_requirements"' EXIT; \
+	$(PIP_COMPILE) --output-file "$$tmp_requirements" requirements.cuda-linux.in; \
+	$(VENV)/python scripts/filter_cuda_overlay_requirements.py "$$tmp_requirements" requirements.cuda-linux.txt requirements.txt
 
 deps-upgrade:
-	@tmp_requirements="$$(mktemp)"; \
+	@set -e; \
+	tmp_requirements="$$(mktemp)"; \
+	trap 'rm -f "$$tmp_requirements"' EXIT; \
 	$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" requirements.in; \
-	$(VENV)/python scripts/filter_portable_requirements.py "$$tmp_requirements" requirements.txt; \
-	rm -f "$$tmp_requirements"
+	$(VENV)/python scripts/filter_portable_requirements.py "$$tmp_requirements" requirements.txt
 	$(PIP_COMPILE) --upgrade --output-file dev-requirements.txt dev-requirements.in
-	@tmp_requirements="$$(mktemp)"; \
-	$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" docker/requirements.cuda-linux.in; \
-	$(VENV)/python scripts/filter_cuda_overlay_requirements.py "$$tmp_requirements" docker/requirements.cuda-linux.txt; \
-	rm -f "$$tmp_requirements"
+	@set -e; \
+	tmp_requirements="$$(mktemp)"; \
+	trap 'rm -f "$$tmp_requirements"' EXIT; \
+	$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" requirements.cpu-linux.in; \
+	$(VENV)/python scripts/filter_torch_overlay_requirements.py "$$tmp_requirements" requirements.cpu-linux.txt requirements.txt
+	@set -e; \
+	tmp_requirements="$$(mktemp)"; \
+	trap 'rm -f "$$tmp_requirements"' EXIT; \
+	$(PIP_COMPILE) --upgrade --output-file "$$tmp_requirements" requirements.cuda-linux.in; \
+	$(VENV)/python scripts/filter_cuda_overlay_requirements.py "$$tmp_requirements" requirements.cuda-linux.txt requirements.txt
 
 worktree-create:
 	@WORKTREE_NAME="$(WORKTREE)" \
@@ -165,8 +199,9 @@ verify-batching:
 
 audit:
 	$(VENV)/pip-audit -r requirements.txt
+	$(VENV)/pip-audit -r requirements.cpu-linux.txt
+	$(VENV)/pip-audit -r requirements.cuda-linux.txt
 	$(VENV)/pip-audit -r dev-requirements.txt
-	$(VENV)/pip-audit -r docker/requirements.cuda-linux.txt
 
 hadolint:
 	@if command -v hadolint >/dev/null 2>&1; then \

@@ -103,7 +103,7 @@ The smoke helpers avoid host Python dependencies:
 
 ### Docker configuration defaults
 
-Compose reads runtime settings from environment variables with defaults baked into `docker/docker-compose.yml`. The tracked `.env.example` stays compatible with the local `make start` flow, so Docker falls back to its own `cuda` default unless you override `DEVICE` in `.env`.
+Compose reads runtime settings from environment variables with defaults baked into `docker/docker-compose.yml`. The tracked `.env.example` leaves `DEVICE` unset so Docker falls back to its own `cuda` default, while the local `make start` flow still uses the application's `cpu` default unless you override it in `.env`.
 
 - `EMBEDSERVE_PORT=8000`
 - `DEVICE=cuda` when unset in `.env`
@@ -126,7 +126,6 @@ MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
 MODEL_REVISION=826711e54e001c83835913827a843d8dd0a1def9
 LOG_LEVEL=INFO
 MAX_INPUTS_PER_REQUEST=64
-DEVICE=cpu
 DTYPE=float32
 MAX_LENGTH=512
 TRUNCATE=true
@@ -334,7 +333,7 @@ For a local developer setup, run:
 make bootstrap-dev
 ```
 
-That creates `venv/`, installs the pinned runtime and dev dependencies, and installs the repo's pre-commit hooks. The repo now standardizes on Python 3.10 for both local and Docker workflows.
+That creates `venv/`, installs the pinned runtime and dev dependencies, selects a Linux Torch overlay, and installs the repo's pre-commit hooks. On Linux, `make bootstrap-dev` defaults `TORCH_VARIANT=auto`, which prefers `requirements.cuda-linux.txt` when `nvidia-smi -L` detects an NVIDIA GPU and otherwise falls back to `requirements.cpu-linux.txt`. Override that selection with `make bootstrap-dev TORCH_VARIANT=cpu` or `make bootstrap-dev TORCH_VARIANT=cuda`. The repo now standardizes on Python 3.10 for both local and Docker workflows.
 
 ## Dependency Management
 
@@ -344,19 +343,22 @@ Edit these files directly:
 
 - `requirements.in` for direct runtime dependencies
 - `dev-requirements.in` for direct dev tooling
-- `docker/requirements.cuda-linux.in` for the Linux/CUDA overlay input
+- `requirements.cpu-linux.in` for the local Linux CPU Torch overlay input
+- `requirements.cuda-linux.in` for the Linux CUDA Torch overlay input
 
 Generated files:
 
-- `requirements.txt` is the portable runtime lockfile used by local bootstrap
+- `requirements.txt` is the portable runtime base lockfile used by the local and Docker overlays
 - `dev-requirements.txt` is the pinned dev-tools lockfile
-- `docker/requirements.cuda-linux.txt` is the Docker CUDA overlay lockfile used by `docker/Dockerfile`
+- `requirements.cpu-linux.txt` is the local Linux CPU Torch overlay lockfile used by `make bootstrap-dev`
+- `requirements.cuda-linux.txt` is the Linux CUDA Torch overlay lockfile used by `make bootstrap-dev` and `docker/Dockerfile`
 
 The generation flow is:
 
 1. `pip-compile` resolves a full lockfile from each `.in` file.
-2. `scripts/filter_portable_requirements.py` removes CUDA-only packages from the runtime lockfile so `requirements.txt` stays portable.
-3. `scripts/filter_cuda_overlay_requirements.py` keeps only the CUDA runtime packages plus `torch` and `triton`, then writes `docker/requirements.cuda-linux.txt` with `-r ../requirements.txt` so the Docker image installs the portable base plus the CUDA overlay.
+2. `scripts/filter_portable_requirements.py` removes CUDA-only packages from the runtime lockfile and rewrites the base Torch pin so `requirements.txt` stays portable.
+3. `scripts/filter_torch_overlay_requirements.py` keeps only the Linux CPU Torch pin, then writes `requirements.cpu-linux.txt` with `-r requirements.txt` so local Linux development can install Torch without reintroducing CUDA packages into the portable base.
+4. `scripts/filter_cuda_overlay_requirements.py` keeps only the CUDA runtime packages plus `torch` and `triton`, then writes `requirements.cuda-linux.txt` with `-r requirements.txt` so Linux GPU development and the Docker image both install the portable base plus the CUDA overlay.
 
 After changing any `.in` file, regenerate the lockfiles without changing already-pinned versions:
 
@@ -370,7 +372,7 @@ Use this only when you intentionally want to refresh pinned versions:
 make deps-upgrade
 ```
 
-Do not edit `requirements.txt`, `dev-requirements.txt`, or `docker/requirements.cuda-linux.txt` by hand unless you are debugging the generation workflow itself.
+Do not edit `requirements.txt`, `requirements.cpu-linux.txt`, `requirements.cuda-linux.txt`, or `dev-requirements.txt` by hand unless you are debugging the generation workflow itself.
 
 ## Worktrees
 
