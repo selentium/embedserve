@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -13,6 +14,11 @@ from prometheus_client import (
     ProcessCollector,
     generate_latest,
 )
+
+if TYPE_CHECKING:
+    from app.runtime import RuntimeState
+
+RequestFailureReason = Literal["overload", "timeout", "internal_error", "shutdown"]
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,11 @@ class AppMetrics:
     batch_request_cancellations_total: Counter
     batch_shutdown_rejections_total: Counter
     batch_inference_failures_total: Counter
+    gpu_memory_allocated_bytes: Gauge
+    gpu_memory_reserved_bytes: Gauge
+    gpu_oom_total: Counter
+    request_failures_total: Counter
+    unhandled_exceptions_total: Counter
 
 
 def create_metrics() -> AppMetrics:
@@ -112,9 +123,40 @@ def create_metrics() -> AppMetrics:
         "Total batch inference execution failures.",
         registry=registry,
     )
+    gpu_memory_allocated_bytes = Gauge(
+        "embedserve_gpu_memory_allocated_bytes",
+        "Current CUDA memory allocated by the active runtime device in bytes.",
+        labelnames=("device",),
+        registry=registry,
+    )
+    gpu_memory_reserved_bytes = Gauge(
+        "embedserve_gpu_memory_reserved_bytes",
+        "Current CUDA memory reserved by the active runtime device in bytes.",
+        labelnames=("device",),
+        registry=registry,
+    )
+    gpu_oom_total = Counter(
+        "embedserve_gpu_oom_total",
+        "Total CUDA out-of-memory incidents seen during inference execution.",
+        labelnames=("device",),
+        registry=registry,
+    )
+    request_failures_total = Counter(
+        "embedserve_request_failures_total",
+        "Total request failures by operational reason.",
+        labelnames=("reason",),
+        registry=registry,
+    )
+    unhandled_exceptions_total = Counter(
+        "embedserve_unhandled_exceptions_total",
+        "Total unhandled request exceptions caught by top-level middleware.",
+        registry=registry,
+    )
 
     for reason in ("max_batch_size", "max_batch_tokens", "timeout", "shutdown"):
         batch_flush_total.labels(reason=reason)
+    for reason in ("overload", "timeout", "internal_error", "shutdown"):
+        request_failures_total.labels(reason=reason)
 
     return AppMetrics(
         registry=registry,
@@ -131,6 +173,11 @@ def create_metrics() -> AppMetrics:
         batch_request_cancellations_total=batch_request_cancellations_total,
         batch_shutdown_rejections_total=batch_shutdown_rejections_total,
         batch_inference_failures_total=batch_inference_failures_total,
+        gpu_memory_allocated_bytes=gpu_memory_allocated_bytes,
+        gpu_memory_reserved_bytes=gpu_memory_reserved_bytes,
+        gpu_oom_total=gpu_oom_total,
+        request_failures_total=request_failures_total,
+        unhandled_exceptions_total=unhandled_exceptions_total,
     )
 
 
@@ -167,6 +214,35 @@ def set_ready_state(metrics: AppMetrics, *, mode: str, ready: bool) -> None:
     metrics.app_ready.labels(mode=mode).set(1 if ready else 0)
 
 
+def observe_request_failure(metrics: AppMetrics, *, reason: RequestFailureReason) -> None:
+    metrics.request_failures_total.labels(reason=reason).inc()
+
+
+def observe_unhandled_exception(metrics: AppMetrics) -> None:
+    metrics.unhandled_exceptions_total.inc()
+
+
+def observe_gpu_oom(metrics: AppMetrics, *, device: str) -> None:
+    metrics.gpu_oom_total.labels(device=device).inc()
+
+
+def refresh_runtime_metrics(metrics: AppMetrics, runtime: RuntimeState) -> None:
+    embedder = runtime.embedder
+    if embedder is None:
+        return
+
+    sample_device_memory = getattr(embedder, "sample_device_memory", None)
+    if not callable(sample_device_memory):
+        return
+
+    snapshot = sample_device_memory()
+    if snapshot is None:
+        return
+
+    metrics.gpu_memory_allocated_bytes.labels(device=runtime.device).set(snapshot.allocated_bytes)
+    metrics.gpu_memory_reserved_bytes.labels(device=runtime.device).set(snapshot.reserved_bytes)
+
+
 def render_metrics(metrics: AppMetrics) -> bytes:
     return generate_latest(metrics.registry)
 
@@ -175,7 +251,11 @@ __all__ = [
     "AppMetrics",
     "CONTENT_TYPE_LATEST",
     "create_metrics",
+    "observe_gpu_oom",
     "observe_http_request",
+    "observe_request_failure",
+    "observe_unhandled_exception",
+    "refresh_runtime_metrics",
     "render_metrics",
     "set_ready_state",
     "touch_http_metrics",

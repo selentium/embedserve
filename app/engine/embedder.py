@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fastapi.exceptions import RequestValidationError
@@ -12,6 +13,12 @@ from app.settings import Settings
 
 _UNBOUNDED_TOKENIZER_LIMIT = 1_000_000
 _NORMALIZE_EPSILON = 1e-12
+
+
+@dataclass(frozen=True)
+class DeviceMemorySnapshot:
+    allocated_bytes: int
+    reserved_bytes: int
 
 
 class Embedder(Protocol):
@@ -139,6 +146,30 @@ class TransformerEmbedder:
                 dim=dim,
                 usage=UsageInfo(tokens=sum(token_counts)),
             )
+
+    def sample_device_memory(self) -> DeviceMemorySnapshot | None:
+        if not self.device.startswith("cuda"):
+            return None
+
+        with self._lock:
+            device_index = _cuda_device_index(self.device)
+            return DeviceMemorySnapshot(
+                allocated_bytes=int(self._torch.cuda.memory_allocated(device_index)),
+                reserved_bytes=int(self._torch.cuda.memory_reserved(device_index)),
+            )
+
+    def is_oom_error(self, exc: BaseException) -> bool:
+        out_of_memory_error = getattr(self._torch, "OutOfMemoryError", None)
+        if out_of_memory_error is not None and isinstance(exc, out_of_memory_error):
+            return True
+
+        message = str(exc).lower()
+        return "out of memory" in message and "cuda" in message
+
+    def clear_device_cache(self) -> None:
+        if not self.device.startswith("cuda"):
+            return
+        self._torch.cuda.empty_cache()
 
     def _tokenize_batch(self, inputs: list[str]) -> Mapping[str, Any]:
         try:
@@ -366,6 +397,12 @@ def _resolve_effective_max_length(
         return configured_max_length
 
     return min(configured_max_length, tokenizer_max_length)
+
+
+def _cuda_device_index(device: str) -> int:
+    if device == "cuda":
+        return 0
+    return int(device.split(":", maxsplit=1)[1])
 
 
 def _sanitize_detail(detail: str) -> str:

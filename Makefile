@@ -1,4 +1,4 @@
-.PHONY: help bootstrap-dev worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run check
+.PHONY: help bootstrap-dev worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching load-test audit hadolint pre-commit-install pre-commit-run check
 
 VENV := ./venv/bin
 PRE_COMMIT_HOME := /tmp/pre-commit-cache
@@ -33,6 +33,26 @@ VERIFY_BATCHING_BATCH_TIMEOUT_MS ?= 2
 VERIFY_BATCHING_MAX_BATCH_QUEUE_SIZE ?= 1024
 VERIFY_BATCHING_BATCH_REQUEST_TIMEOUT_MS ?= 5000
 VERIFY_BATCHING_ARGS ?=
+LOAD_TEST_EMBED_URL ?= http://127.0.0.1:8000/embed
+LOAD_TEST_METRICS_URL ?= http://127.0.0.1:8000/metrics
+LOAD_TEST_READY_URL ?= http://127.0.0.1:8000/readyz
+LOAD_TEST_DURATION_SECONDS ?= 3600
+LOAD_TEST_CONCURRENCY ?= 32
+LOAD_TEST_WARMUP_REQUESTS ?= 64
+LOAD_TEST_INPUTS_PER_REQUEST ?= 2
+LOAD_TEST_INPUT_TOKEN_COUNT ?= 24
+LOAD_TEST_TIMEOUT_SECONDS ?= 10
+LOAD_TEST_METRICS_POLL_INTERVAL_SECONDS ?= 5
+LOAD_TEST_MAX_VRAM_DRIFT_BYTES ?= 268435456
+LOAD_TEST_HARDWARE_ID ?= local-dev
+LOAD_TEST_MODEL_ID ?= sentence-transformers/all-MiniLM-L6-v2
+LOAD_TEST_MODEL_REVISION ?= 826711e54e001c83835913827a843d8dd0a1def9
+LOAD_TEST_MAX_BATCH_SIZE ?= 128
+LOAD_TEST_MAX_BATCH_TOKENS ?= 8192
+LOAD_TEST_BATCH_TIMEOUT_MS ?= 2
+LOAD_TEST_MAX_BATCH_QUEUE_SIZE ?= 1024
+LOAD_TEST_BATCH_REQUEST_TIMEOUT_MS ?= 5000
+LOAD_TEST_ARGS ?=
 
 help:
 	@echo "Available targets:"
@@ -46,6 +66,7 @@ help:
 	@echo "  test              Run pytest (with coverage from pyproject.toml)"
 	@echo "  verify-determinism Run live determinism verification against /embed"
 	@echo "  verify-batching   Run live batching acceptance verification"
+	@echo "  load-test         Run sustained stability and memory monitoring load test"
 	@echo "  audit             Audit dev dependencies for known vulnerabilities"
 	@echo "  hadolint          Lint Dockerfiles if present"
 	@echo "  pre-commit-install Install git pre-commit hooks"
@@ -121,6 +142,29 @@ verify-batching:
 		--max-batch-queue-size "$(VERIFY_BATCHING_MAX_BATCH_QUEUE_SIZE)" \
 		--batch-request-timeout-ms "$(VERIFY_BATCHING_BATCH_REQUEST_TIMEOUT_MS)" \
 		$(VERIFY_BATCHING_ARGS)
+
+load-test:
+	$(VENV)/python scripts/load_test.py \
+		--embed-url "$(LOAD_TEST_EMBED_URL)" \
+		--metrics-url "$(LOAD_TEST_METRICS_URL)" \
+		--ready-url "$(LOAD_TEST_READY_URL)" \
+		--duration-seconds "$(LOAD_TEST_DURATION_SECONDS)" \
+		--concurrency "$(LOAD_TEST_CONCURRENCY)" \
+		--warmup-requests "$(LOAD_TEST_WARMUP_REQUESTS)" \
+		--inputs-per-request "$(LOAD_TEST_INPUTS_PER_REQUEST)" \
+		--input-token-count "$(LOAD_TEST_INPUT_TOKEN_COUNT)" \
+		--timeout-seconds "$(LOAD_TEST_TIMEOUT_SECONDS)" \
+		--metrics-poll-interval-seconds "$(LOAD_TEST_METRICS_POLL_INTERVAL_SECONDS)" \
+		--max-vram-drift-bytes "$(LOAD_TEST_MAX_VRAM_DRIFT_BYTES)" \
+		--hardware-id "$(LOAD_TEST_HARDWARE_ID)" \
+		--model-id "$(LOAD_TEST_MODEL_ID)" \
+		--model-revision "$(LOAD_TEST_MODEL_REVISION)" \
+		--max-batch-size "$(LOAD_TEST_MAX_BATCH_SIZE)" \
+		--max-batch-tokens "$(LOAD_TEST_MAX_BATCH_TOKENS)" \
+		--batch-timeout-ms "$(LOAD_TEST_BATCH_TIMEOUT_MS)" \
+		--max-batch-queue-size "$(LOAD_TEST_MAX_BATCH_QUEUE_SIZE)" \
+		--batch-request-timeout-ms "$(LOAD_TEST_BATCH_REQUEST_TIMEOUT_MS)" \
+		$(LOAD_TEST_ARGS)
 
 audit:
 	$(VENV)/pip-audit -r dev-requirements.txt

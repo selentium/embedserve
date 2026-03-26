@@ -1,8 +1,8 @@
-# EmbedServe (Milestone 4)
+# EmbedServe (Milestone 7)
 
 EmbedServe is a FastAPI embedding service that runs dynamically batched Hugging Face encoder inference with a pinned model revision.
 
-Milestone 4 keeps the Milestone 3 response schema stable, adds always-on FIFO dynamic batching for `POST /embed`, and keeps the determinism verification workflow.
+Milestone 7 keeps the existing API contract stable, preserves always-on FIFO dynamic batching for `POST /embed`, and adds sustained-load stability monitoring with GPU memory telemetry and a one-hour load harness.
 
 ## Current behavior
 
@@ -229,9 +229,16 @@ Exposes Prometheus text format with:
 - `embedserve_batch_request_cancellations_total`
 - `embedserve_batch_shutdown_rejections_total`
 - `embedserve_batch_inference_failures_total`
+- `embedserve_gpu_memory_allocated_bytes{device="cuda[:N]"}`
+- `embedserve_gpu_memory_reserved_bytes{device="cuda[:N]"}`
+- `embedserve_gpu_oom_total{device="cuda[:N]"}`
+- `embedserve_request_failures_total{reason="overload|timeout|internal_error|shutdown"}`
+- `embedserve_unhandled_exceptions_total`
 - default process and Python runtime metrics
 
 `embedserve_app_ready{mode="model"}` is `1` when the model runtime is ready and `0` otherwise.
+
+GPU memory series are emitted only when the active runtime is on CUDA. CPU runs do not expose synthetic zero-valued GPU gauges.
 
 Batch histogram buckets are fixed in code for compatibility:
 
@@ -256,6 +263,34 @@ The harness profile captures:
 - input shape (`--inputs-per-request`, `--input-token-count`)
 - warmup count
 - batching settings (`MAX_BATCH_SIZE`, `MAX_BATCH_TOKENS`, `BATCH_TIMEOUT_MS`, `MAX_BATCH_QUEUE_SIZE`, `BATCH_REQUEST_TIMEOUT_MS`)
+
+## Stability Load Harness
+
+Run the sustained-load harness against a live server:
+
+```bash
+make load-test LOAD_TEST_HARDWARE_ID="gpu-box-01"
+```
+
+The harness:
+
+- waits for `GET /readyz`
+- performs warmup requests before measuring
+- drives fixed concurrency for the configured duration
+- polls `GET /metrics` for request failures, unhandled exceptions, process RSS, and CUDA memory
+- exits `0` on pass, `1` on stability failure, and `2` on harness or server-side operational failure
+
+The default one-hour profile uses:
+
+- `LOAD_TEST_DURATION_SECONDS=3600`
+- `LOAD_TEST_CONCURRENCY=32`
+- `LOAD_TEST_WARMUP_REQUESTS=64`
+- `LOAD_TEST_INPUTS_PER_REQUEST=2`
+- `LOAD_TEST_INPUT_TOKEN_COUNT=24`
+- `LOAD_TEST_METRICS_POLL_INTERVAL_SECONDS=5`
+- `LOAD_TEST_MAX_VRAM_DRIFT_BYTES=268435456`
+
+See `STABILITY.md` for the canonical report format and the documented VRAM drift threshold.
 
 ## Install
 

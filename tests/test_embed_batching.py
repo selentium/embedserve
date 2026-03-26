@@ -113,6 +113,29 @@ def _runtime_with_embedder(settings: Settings, embedder: Embedder) -> RuntimeSta
     )
 
 
+def _runtime_unready(settings: Settings) -> RuntimeState:
+    return RuntimeState(
+        ready=False,
+        mode="model",
+        model_id=settings.MODEL_ID,
+        revision=settings.MODEL_REVISION,
+        device="cpu",
+        dtype="float32",
+        reason="initialization_failed",
+        detail="model bootstrap failed",
+        embedder=None,
+    )
+
+
+def _metric_value(metrics_text: str, metric_name: str, *, labels: str | None = None) -> str | None:
+    suffix = "" if labels is None else f"{{{labels}}}"
+    needle = f"{metric_name}{suffix} "
+    for line in metrics_text.splitlines():
+        if line.startswith(needle):
+            return line.removeprefix(needle)
+    return None
+
+
 def test_submit_time_preflight_validation_isolated_from_other_requests() -> None:
     def initializer(settings: Settings) -> RuntimeState:
         embedder, _, _ = make_fake_embedder(
@@ -153,7 +176,7 @@ def test_embed_queue_saturation_returns_overload_503(
     def initializer(settings: Settings) -> RuntimeState:
         return _runtime_with_embedder(settings, blocking_embedder)
 
-    async def run() -> tuple[int, str, int, int]:
+    async def run() -> tuple[int, str, int, int, str]:
         app = create_app(runtime_initializer=initializer)
         async with (
             app.router.lifespan_context(app),
@@ -166,18 +189,28 @@ def test_embed_queue_saturation_returns_overload_503(
             overload = await client.post("/embed", json={"inputs": ["third"]})
             first = await first_task
             second = await second_task
+            metrics = await client.get("/metrics")
             return (
                 overload.status_code,
                 overload.json()["detail"],
                 first.status_code,
                 second.status_code,
+                metrics.text,
             )
 
-    overload_status, overload_detail, first_status, second_status = asyncio.run(run())
+    overload_status, overload_detail, first_status, second_status, metrics_body = asyncio.run(run())
     assert overload_status == 503
     assert overload_detail == "Batch queue is full"
     assert first_status == 200
     assert second_status == 200
+    assert (
+        _metric_value(
+            metrics_body,
+            "embedserve_request_failures_total",
+            labels='reason="overload"',
+        )
+        == "1.0"
+    )
 
 
 def test_embed_request_timeout_returns_timeout_503(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,6 +237,14 @@ def test_embed_request_timeout_returns_timeout_503(monkeypatch: pytest.MonkeyPat
     assert status_code == 503
     assert detail == "Embedding request timed out"
     assert "embedserve_batch_request_timeouts_total 1.0" in metrics_body
+    assert (
+        _metric_value(
+            metrics_body,
+            "embedserve_request_failures_total",
+            labels='reason="timeout"',
+        )
+        == "1.0"
+    )
 
 
 def test_embed_shutdown_rejection_returns_shutdown_503() -> None:
@@ -214,7 +255,7 @@ def test_embed_shutdown_rejection_returns_shutdown_503() -> None:
         )
         return _runtime_with_embedder(settings, embedder)
 
-    async def run() -> tuple[int, str]:
+    async def run() -> tuple[int, str, str]:
         app = create_app(runtime_initializer=initializer)
         async with (
             app.router.lifespan_context(app),
@@ -222,29 +263,47 @@ def test_embed_shutdown_rejection_returns_shutdown_503() -> None:
         ):
             app.state.batcher._accepting = False
             response = await client.post("/embed", json={"inputs": ["hello"]})
-            return response.status_code, response.json()["detail"]
+            metrics = await client.get("/metrics")
+            return response.status_code, response.json()["detail"], metrics.text
 
-    status_code, detail = asyncio.run(run())
+    status_code, detail, metrics_body = asyncio.run(run())
     assert status_code == 503
     assert detail == "Service is shutting down"
+    assert (
+        _metric_value(
+            metrics_body,
+            "embedserve_request_failures_total",
+            labels='reason="shutdown"',
+        )
+        == "1.0"
+    )
 
 
 def test_embed_preflight_internal_failure_maps_to_500() -> None:
     def initializer(settings: Settings) -> RuntimeState:
         return _runtime_with_embedder(settings, PreflightFailureEmbedder())
 
-    async def run() -> tuple[int, str]:
+    async def run() -> tuple[int, str, str]:
         app = create_app(runtime_initializer=initializer)
         async with (
             app.router.lifespan_context(app),
             AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
         ):
             response = await client.post("/embed", json={"inputs": ["hello"]})
-            return response.status_code, response.json()["detail"]
+            metrics = await client.get("/metrics")
+            return response.status_code, response.json()["detail"], metrics.text
 
-    status_code, detail = asyncio.run(run())
+    status_code, detail, metrics_body = asyncio.run(run())
     assert status_code == 500
     assert detail == "Embedding inference failed"
+    assert (
+        _metric_value(
+            metrics_body,
+            "embedserve_request_failures_total",
+            labels='reason="internal_error"',
+        )
+        == "1.0"
+    )
 
 
 def test_embed_batch_inference_failure_maps_to_500_and_metric() -> None:
@@ -265,6 +324,45 @@ def test_embed_batch_inference_failure_maps_to_500_and_metric() -> None:
     assert status_code == 500
     assert detail == "Embedding inference failed"
     assert "embedserve_batch_inference_failures_total 1.0" in metrics_body
+    assert (
+        _metric_value(
+            metrics_body,
+            "embedserve_request_failures_total",
+            labels='reason="internal_error"',
+        )
+        == "1.0"
+    )
+
+
+def test_embed_validation_and_unready_do_not_increment_operational_failure_counter() -> None:
+    async def run() -> tuple[str | None, str | None]:
+        app = create_app(runtime_initializer=_runtime_unready)
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+        ):
+            validation_response = await client.post("/embed", json={"inputs": ["   "]})
+            unready_response = await client.post("/embed", json={"inputs": ["hello"]})
+            metrics = await client.get("/metrics")
+
+        assert validation_response.status_code == 422
+        assert unready_response.status_code == 503
+        return (
+            _metric_value(
+                metrics.text,
+                "embedserve_request_failures_total",
+                labels='reason="internal_error"',
+            ),
+            _metric_value(
+                metrics.text,
+                "embedserve_request_failures_total",
+                labels='reason="timeout"',
+            ),
+        )
+
+    internal_error_count, timeout_count = asyncio.run(run())
+    assert internal_error_count == "0.0"
+    assert timeout_count == "0.0"
 
 
 def test_embed_preserves_fifo_arrival_order_before_preflight_completes(
