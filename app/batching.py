@@ -10,7 +10,7 @@ from typing import Literal
 from fastapi.concurrency import run_in_threadpool as _shared_run_in_threadpool
 
 from app.engine.embedder import Embedder
-from app.metrics import AppMetrics
+from app.metrics import AppMetrics, observe_gpu_oom
 from app.schemas import EmbeddingItem, EmbedResponse, UsageInfo
 
 FlushReason = Literal["max_batch_size", "max_batch_tokens", "timeout", "shutdown"]
@@ -327,8 +327,14 @@ class DynamicBatcher:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             self._metrics.batch_inference_failures_total.inc()
+            is_oom_error = getattr(self._embedder, "is_oom_error", None)
+            if callable(is_oom_error) and is_oom_error(exc):
+                observe_gpu_oom(self._metrics, device=self._embedder.device)
+                clear_device_cache = getattr(self._embedder, "clear_device_cache", None)
+                if callable(clear_device_cache):
+                    clear_device_cache()
             for job in active_jobs:
                 self._set_job_exception(job, BatchInferenceError())
             return

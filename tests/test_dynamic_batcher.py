@@ -22,6 +22,7 @@ from app.schemas import EmbeddingItem, EmbedResponse, UsageInfo
 def _counter_value(metrics: AppMetrics, name: str, labels: dict[str, str]) -> float | None:
     metric_lookup = {
         "batch_flush_total": metrics.batch_flush_total,
+        "gpu_oom_total": metrics.gpu_oom_total,
     }
     collector = metric_lookup[name]
     for metric in collector.collect():
@@ -116,6 +117,22 @@ class NonStoppableBlockingEmbedder(RecordingEmbedder):
             return super().embed(inputs)
         finally:
             self.finished.set()
+
+
+class OOMEmbedder(RecordingEmbedder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.device = "cuda:0"
+        self.clear_device_cache_calls = 0
+
+    def embed(self, inputs: list[str]) -> EmbedResponse:
+        raise RuntimeError("CUDA out of memory while allocating tensor")
+
+    def is_oom_error(self, exc: BaseException) -> bool:
+        return "out of memory" in str(exc).lower()
+
+    def clear_device_cache(self) -> None:
+        self.clear_device_cache_calls += 1
 
 
 class InvalidFanOutEmbedder(RecordingEmbedder):
@@ -607,5 +624,35 @@ def test_batcher_rejects_entire_batch_when_fan_out_payload_is_malformed() -> Non
             await batcher.shutdown()
 
         assert embedder.calls == [["first", "second"]]
+
+    asyncio.run(run())
+
+
+def test_batcher_records_gpu_oom_and_clears_cache() -> None:
+    async def run() -> None:
+        metrics = create_metrics()
+        embedder = OOMEmbedder()
+        batcher = _make_batcher(
+            embedder=embedder,
+            metrics=metrics,
+            max_batch_size=1,
+            max_batch_tokens=100,
+            batch_timeout_ms=50,
+        )
+        await batcher.start()
+        try:
+            submission = _submit(batcher, text="oom", tokens=1)
+
+            with pytest.raises(BatchInferenceError):
+                await asyncio.wait_for(submission.future, timeout=1)
+        finally:
+            await batcher.shutdown()
+
+        assert _counter_value(
+            metrics,
+            "gpu_oom_total",
+            labels={"device": "cuda:0"},
+        ) == pytest.approx(1.0)
+        assert embedder.clear_device_cache_calls == 1
 
     asyncio.run(run())

@@ -150,10 +150,15 @@ class FakeCuda:
         available: bool = False,
         device_count: int = 0,
         bf16_supported: bool = False,
+        memory_allocated_bytes: int = 0,
+        memory_reserved_bytes: int = 0,
     ) -> None:
         self._available = available
         self._device_count = device_count
         self._bf16_supported = bf16_supported
+        self._memory_allocated_bytes = memory_allocated_bytes
+        self._memory_reserved_bytes = memory_reserved_bytes
+        self.empty_cache_calls = 0
 
     def is_available(self) -> bool:
         return self._available
@@ -164,6 +169,21 @@ class FakeCuda:
     def is_bf16_supported(self) -> bool:
         return self._bf16_supported
 
+    def memory_allocated(self, device: int) -> int:
+        if device >= self._device_count:
+            msg = f"Unsupported device index: {device}"
+            raise ValueError(msg)
+        return self._memory_allocated_bytes
+
+    def memory_reserved(self, device: int) -> int:
+        if device >= self._device_count:
+            msg = f"Unsupported device index: {device}"
+            raise ValueError(msg)
+        return self._memory_reserved_bytes
+
+    def empty_cache(self) -> None:
+        self.empty_cache_calls += 1
+
 
 class FakeTorch:
     float32 = "float32"
@@ -171,8 +191,12 @@ class FakeTorch:
     bfloat16 = "bfloat16"
 
     def __init__(self, *, cuda: FakeCuda | None = None) -> None:
+        class FakeOutOfMemoryError(RuntimeError):
+            pass
+
         self.cuda = cuda or FakeCuda()
         self.nn = SimpleNamespace(functional=SimpleNamespace(normalize=self._normalize))
+        self.OutOfMemoryError = FakeOutOfMemoryError
 
     def inference_mode(self) -> Any:
         return nullcontext()

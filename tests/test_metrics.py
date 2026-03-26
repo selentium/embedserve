@@ -7,12 +7,19 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from starlette.types import Message
 
-from app.engine.embedder import RuntimeInitializationError
+from app.engine.embedder import RuntimeInitializationError, TransformerEmbedder
 from app.main import create_app
 from app.metrics import AppMetrics
 from app.runtime import RuntimeState
 from app.settings import Settings
-from tests.fakes import make_fake_embedder, make_ready_runtime
+from tests.fakes import (
+    FakeCuda,
+    FakeModel,
+    FakeTokenizer,
+    FakeTorch,
+    make_fake_embedder,
+    make_ready_runtime,
+)
 
 
 def _ready_initializer(settings: Settings) -> RuntimeState:
@@ -57,6 +64,49 @@ def _app_ready_value(metrics: AppMetrics, *, mode: str) -> float | None:
     return None
 
 
+def _sample_value(metrics: AppMetrics, metric_name: str, labels: dict[str, str]) -> float | None:
+    for collector in metrics.registry.collect():
+        for sample in collector.samples:
+            if sample.name != metric_name:
+                continue
+            if sample.labels == labels:
+                return sample.value
+    return None
+
+
+def _gpu_ready_initializer(settings: Settings) -> RuntimeState:
+    torch_module = FakeTorch(
+        cuda=FakeCuda(
+            available=True,
+            device_count=1,
+            memory_allocated_bytes=1_024,
+            memory_reserved_bytes=2_048,
+        )
+    )
+    tokenizer = FakeTokenizer(token_map={})
+    model = FakeModel()
+    model.eval()
+    embedder = TransformerEmbedder(
+        model_id=settings.MODEL_ID,
+        revision=settings.MODEL_REVISION,
+        tokenizer=tokenizer,
+        model=model,
+        torch_module=torch_module,
+        device="cuda:0",
+        dtype="float16",
+        effective_max_length=8,
+        truncate=True,
+        normalize_embeddings=True,
+        output_dtype="float32",
+        output_torch_dtype=torch_module.float32,
+    )
+    return make_ready_runtime(
+        model_id=settings.MODEL_ID,
+        revision=settings.MODEL_REVISION,
+        embedder=embedder,
+    )
+
+
 def test_metrics_exposes_ready_runtime_state() -> None:
     with TestClient(create_app(runtime_initializer=_ready_initializer)) as client:
         response = client.get("/metrics")
@@ -82,7 +132,15 @@ def test_metrics_exposes_ready_runtime_state() -> None:
     assert "embedserve_batch_request_cancellations_total" in body
     assert "embedserve_batch_shutdown_rejections_total" in body
     assert "embedserve_batch_inference_failures_total" in body
+    assert 'embedserve_request_failures_total{reason="overload"} 0.0' in body
+    assert 'embedserve_request_failures_total{reason="timeout"} 0.0' in body
+    assert 'embedserve_request_failures_total{reason="internal_error"} 0.0' in body
+    assert 'embedserve_request_failures_total{reason="shutdown"} 0.0' in body
+    assert "embedserve_unhandled_exceptions_total 0.0" in body
     assert "python_gc_objects_collected_total" in body or "process_virtual_memory_bytes" in body
+    assert "embedserve_gpu_memory_allocated_bytes{device=" not in body
+    assert "embedserve_gpu_memory_reserved_bytes{device=" not in body
+    assert "embedserve_gpu_oom_total{device=" not in body
 
 
 def test_metrics_exposes_unready_runtime_state() -> None:
@@ -114,6 +172,59 @@ def test_metrics_supports_in_process_asgi_transport() -> None:
 
     assert status_code == 200
     assert request_id
+
+
+def test_metrics_refresh_gpu_memory_from_runtime() -> None:
+    async def run_request() -> tuple[int, str]:
+        app = create_app(runtime_initializer=_gpu_ready_initializer)
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as client,
+        ):
+            response = await asyncio.wait_for(client.get("/metrics"), timeout=1)
+
+        return response.status_code, response.text
+
+    status_code, body = asyncio.run(run_request())
+
+    assert status_code == 200
+    assert 'embedserve_gpu_memory_allocated_bytes{device="cuda:0"} 1024.0' in body
+    assert 'embedserve_gpu_memory_reserved_bytes{device="cuda:0"} 2048.0' in body
+
+
+def test_unhandled_exceptions_increment_failure_metrics() -> None:
+    async def run_request() -> tuple[float | None, float | None]:
+        app = create_app(runtime_initializer=_ready_initializer)
+
+        @app.get("/boom")
+        async def boom() -> dict[str, bool]:
+            raise RuntimeError("boom")
+
+        async with app.router.lifespan_context(app):
+            metrics = app.state.metrics
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/boom")
+
+            assert response.status_code == 500
+            return (
+                _sample_value(metrics, "embedserve_unhandled_exceptions_total", {}),
+                _sample_value(
+                    metrics,
+                    "embedserve_request_failures_total",
+                    {"reason": "internal_error"},
+                ),
+            )
+
+    unhandled_exceptions, internal_error_failures = asyncio.run(run_request())
+
+    assert unhandled_exceptions == 1.0
+    assert internal_error_failures == 1.0
 
 
 def test_cancelled_requests_do_not_record_http_500_metrics() -> None:

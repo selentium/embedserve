@@ -30,6 +30,9 @@ from app.metrics import (
     AppMetrics,
     create_metrics,
     observe_http_request,
+    observe_request_failure,
+    observe_unhandled_exception,
+    refresh_runtime_metrics,
     render_metrics,
     set_ready_state,
     touch_http_metrics,
@@ -169,6 +172,8 @@ class RequestContextMiddleware:
                     "status_code": response.status_code,
                 },
             )
+            observe_unhandled_exception(request.app.state.metrics)
+            observe_request_failure(request.app.state.metrics, reason="internal_error")
             await response(scope, receive, send_with_request_id)
         finally:
             if not request_cancelled:
@@ -319,6 +324,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         await batcher.start()
     app.state.batcher = batcher
+    refresh_runtime_metrics(metrics, runtime)
 
     try:
         yield
@@ -387,8 +393,10 @@ def create_app(
     @app.get("/metrics")
     async def metrics_endpoint(
         metrics: Annotated[AppMetrics, Depends(get_metrics)],
+        runtime: Annotated[RuntimeState, Depends(get_runtime)],
     ) -> Response:
         touch_http_metrics(metrics, method="GET", route="/metrics", status_code=200)
+        refresh_runtime_metrics(metrics, runtime)
         return Response(content=render_metrics(metrics), media_type=CONTENT_TYPE_LATEST)
 
     @app.post(
@@ -471,6 +479,7 @@ def create_app(
             except RequestValidationError:
                 raise
             except Exception as exc:
+                observe_request_failure(metrics, reason="internal_error")
                 raise HTTPException(status_code=500, detail=_DETAIL_BATCH_INFERENCE_FAILED) from exc
 
             await sequencer.wait_turn(ticket)
@@ -478,9 +487,11 @@ def create_app(
                 submission = batcher.submit(payload.inputs, token_counts)
             except BatcherQueueFullError as exc:
                 metrics.batch_overload_rejections_total.inc()
+                observe_request_failure(metrics, reason="overload")
                 raise HTTPException(status_code=503, detail=_DETAIL_BATCH_QUEUE_FULL) from exc
             except BatcherShuttingDownError as exc:
                 metrics.batch_shutdown_rejections_total.inc()
+                observe_request_failure(metrics, reason="shutdown")
                 raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN) from exc
         finally:
             await sequencer.complete_turn(ticket)
@@ -493,6 +504,7 @@ def create_app(
         except TimeoutError as exc:
             batcher.cancel(submission.job_id)
             metrics.batch_request_timeouts_total.inc()
+            observe_request_failure(metrics, reason="timeout")
             raise HTTPException(status_code=503, detail=_DETAIL_BATCH_REQUEST_TIMED_OUT) from exc
         except asyncio.CancelledError:
             batcher.cancel(submission.job_id)
@@ -500,8 +512,10 @@ def create_app(
             raise
         except BatcherShuttingDownError as exc:
             metrics.batch_shutdown_rejections_total.inc()
+            observe_request_failure(metrics, reason="shutdown")
             raise HTTPException(status_code=503, detail=_DETAIL_BATCH_SHUTDOWN) from exc
         except BatchInferenceError as exc:
+            observe_request_failure(metrics, reason="internal_error")
             raise HTTPException(status_code=500, detail=_DETAIL_BATCH_INFERENCE_FAILED) from exc
 
     return app
