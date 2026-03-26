@@ -1,4 +1,4 @@
-.PHONY: help bootstrap-dev deps-compile deps-upgrade worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching audit hadolint pre-commit-install pre-commit-run docker-build docker-up docker-down docker-logs docker-ps docker-health docker-test-request check
+.PHONY: help bootstrap-dev deps-compile deps-upgrade worktree-create worktree-remove start format lint typecheck test verify-determinism verify-batching bench-10k audit hadolint pre-commit-install pre-commit-run docker-build docker-up docker-down docker-logs docker-ps docker-health docker-test-request check
 
 VENV := ./venv/bin
 PRE_COMMIT_HOME := /tmp/pre-commit-cache
@@ -44,6 +44,30 @@ DOCKER_HEALTH_TIMEOUT_SECONDS ?= 300
 DOCKER_HEALTH_POLL_INTERVAL_SECONDS ?= 5
 DOCKER_INTERNAL_EMBED_URL ?= http://127.0.0.1:8000/embed
 DOCKER_TEST_INPUTS_JSON ?= ["hello world","docker smoke test"]
+BENCH_10K_EMBED_URL ?= http://127.0.0.1:8000/embed
+BENCH_10K_HARDWARE_ID ?= local-dev
+BENCH_10K_LABEL ?= batched
+BENCH_10K_CONCURRENCY ?= 32
+BENCH_10K_TOTAL_TEXTS ?= 10000
+BENCH_10K_WARMUP_REQUESTS ?= 200
+BENCH_10K_INPUTS_PER_REQUEST ?= 1
+BENCH_10K_INPUT_TOKEN_COUNT ?= 24
+BENCH_10K_TIMEOUT_SECONDS ?= 10
+BENCH_10K_MODEL_ID ?= sentence-transformers/all-MiniLM-L6-v2
+BENCH_10K_MODEL_REVISION ?= 826711e54e001c83835913827a843d8dd0a1def9
+BENCH_10K_DEVICE ?= cpu
+BENCH_10K_DTYPE ?= float32
+BENCH_10K_MAX_LENGTH ?= 512
+BENCH_10K_TRUNCATE ?= true
+BENCH_10K_MAX_BATCH_SIZE ?= 128
+BENCH_10K_MAX_BATCH_TOKENS ?= 8192
+BENCH_10K_BATCH_TIMEOUT_MS ?= 2
+BENCH_10K_MAX_BATCH_QUEUE_SIZE ?= 1024
+BENCH_10K_BATCH_REQUEST_TIMEOUT_MS ?= 5000
+BENCH_10K_WARM_CACHE ?= true
+BENCH_10K_WARM_MODEL ?= true
+BENCH_10K_WARM_CONTAINER ?= true
+BENCH_10K_ARGS ?=
 
 help:
 	@echo "Available targets:"
@@ -59,6 +83,7 @@ help:
 	@echo "  test              Run pytest (with coverage from pyproject.toml)"
 	@echo "  verify-determinism Run live determinism verification against /embed"
 	@echo "  verify-batching   Run live batching acceptance verification"
+	@echo "  bench-10k         Run live benchmark harness against /embed"
 	@echo "  audit             Audit runtime and dev dependency lockfiles for known vulnerabilities"
 	@echo "  hadolint          Lint Dockerfiles if present"
 	@echo "  pre-commit-install Install git pre-commit hooks"
@@ -196,6 +221,33 @@ verify-batching:
 		--max-batch-queue-size "$(VERIFY_BATCHING_MAX_BATCH_QUEUE_SIZE)" \
 		--batch-request-timeout-ms "$(VERIFY_BATCHING_BATCH_REQUEST_TIMEOUT_MS)" \
 		$(VERIFY_BATCHING_ARGS)
+
+bench-10k:
+	$(VENV)/python scripts/bench_10k.py \
+		--embed-url "$(BENCH_10K_EMBED_URL)" \
+		--hardware-id "$(BENCH_10K_HARDWARE_ID)" \
+		--label "$(BENCH_10K_LABEL)" \
+		--concurrency "$(BENCH_10K_CONCURRENCY)" \
+		--total-texts "$(BENCH_10K_TOTAL_TEXTS)" \
+		--warmup-requests "$(BENCH_10K_WARMUP_REQUESTS)" \
+		--inputs-per-request "$(BENCH_10K_INPUTS_PER_REQUEST)" \
+		--input-token-count "$(BENCH_10K_INPUT_TOKEN_COUNT)" \
+		--timeout-seconds "$(BENCH_10K_TIMEOUT_SECONDS)" \
+		--model-id "$(BENCH_10K_MODEL_ID)" \
+		--model-revision "$(BENCH_10K_MODEL_REVISION)" \
+		--device "$(BENCH_10K_DEVICE)" \
+		--dtype "$(BENCH_10K_DTYPE)" \
+		--max-length "$(BENCH_10K_MAX_LENGTH)" \
+		--truncate "$(BENCH_10K_TRUNCATE)" \
+		--max-batch-size "$(BENCH_10K_MAX_BATCH_SIZE)" \
+		--max-batch-tokens "$(BENCH_10K_MAX_BATCH_TOKENS)" \
+		--batch-timeout-ms "$(BENCH_10K_BATCH_TIMEOUT_MS)" \
+		--max-batch-queue-size "$(BENCH_10K_MAX_BATCH_QUEUE_SIZE)" \
+		--batch-request-timeout-ms "$(BENCH_10K_BATCH_REQUEST_TIMEOUT_MS)" \
+		--warm-cache "$(BENCH_10K_WARM_CACHE)" \
+		--warm-model "$(BENCH_10K_WARM_MODEL)" \
+		--warm-container "$(BENCH_10K_WARM_CONTAINER)" \
+		$(BENCH_10K_ARGS)
 
 audit:
 	$(VENV)/pip-audit -r requirements.txt

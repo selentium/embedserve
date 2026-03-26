@@ -36,11 +36,13 @@ from app.metrics import (
 )
 from app.runtime import RuntimeInitializer, RuntimeState, build_unready_runtime, initialize_runtime
 from app.schemas import (
+    BatchingSettingsInfo,
     EmbedRequest,
     EmbedResponse,
     HealthResponse,
     NotReadyResponse,
     ReadyResponse,
+    TokenizationSettingsInfo,
 )
 from app.settings import Settings
 
@@ -222,6 +224,23 @@ def _runtime_log_fields(
     }
 
 
+def _tokenization_settings_info(settings: Settings) -> TokenizationSettingsInfo:
+    return TokenizationSettingsInfo(
+        max_length=settings.MAX_LENGTH,
+        truncate=settings.TRUNCATE,
+    )
+
+
+def _batching_settings_info(settings: Settings) -> BatchingSettingsInfo:
+    return BatchingSettingsInfo(
+        max_batch_size=settings.MAX_BATCH_SIZE,
+        max_batch_tokens=settings.MAX_BATCH_TOKENS,
+        batch_timeout_ms=settings.BATCH_TIMEOUT_MS,
+        max_batch_queue_size=settings.MAX_BATCH_QUEUE_SIZE,
+        batch_request_timeout_ms=settings.BATCH_REQUEST_TIMEOUT_MS,
+    )
+
+
 async def _await_submission_result(
     future: asyncio.Future[EmbedResponse],
     *,
@@ -334,6 +353,7 @@ def create_app(
     )
     async def readyz(
         runtime: Annotated[RuntimeState, Depends(get_runtime)],
+        settings: Annotated[Settings, Depends(get_settings)],
     ) -> ReadyResponse | JSONResponse:
         if runtime.ready:
             return ReadyResponse(
@@ -343,6 +363,8 @@ def create_app(
                 revision=runtime.revision,
                 device=runtime.device,
                 dtype=runtime.dtype,
+                tokenization=_tokenization_settings_info(settings),
+                batching=_batching_settings_info(settings),
             )
 
         assert runtime.reason is not None
@@ -357,6 +379,8 @@ def create_app(
                 dtype=runtime.dtype,
                 reason=runtime.reason,
                 detail=runtime.detail or "Initialization failed",
+                tokenization=_tokenization_settings_info(settings),
+                batching=_batching_settings_info(settings),
             ).model_dump(),
         )
 

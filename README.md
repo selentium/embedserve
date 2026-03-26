@@ -1,8 +1,8 @@
-# EmbedServe (Milestone 5)
+# EmbedServe (Milestone 6)
 
 EmbedServe is a FastAPI embedding service that runs dynamically batched Hugging Face encoder inference with a pinned model revision.
 
-Milestone 5 keeps the Milestone 4 API and batching behavior, adds a Dockerized GPU deployment workflow, pins the Python dependency set, and documents the host prerequisites required to reproduce the runtime stack on a clean machine.
+Milestone 6 keeps the earlier API and batching behavior, preserves the Dockerized reproducible deployment and pinned dependency workflow from Milestone 5, and adds live verification harnesses plus a repeatable benchmark workflow with a dedicated benchmark report.
 
 ## Current behavior
 
@@ -188,7 +188,18 @@ Ready response:
   "model": "sentence-transformers/all-MiniLM-L6-v2",
   "revision": "826711e54e001c83835913827a843d8dd0a1def9",
   "device": "cpu",
-  "dtype": "float32"
+  "dtype": "float32",
+  "tokenization": {
+    "max_length": 512,
+    "truncate": true
+  },
+  "batching": {
+    "max_batch_size": 128,
+    "max_batch_tokens": 8192,
+    "batch_timeout_ms": 2,
+    "max_batch_queue_size": 1024,
+    "batch_request_timeout_ms": 5000
+  }
 }
 ```
 
@@ -203,7 +214,18 @@ Unready response:
   "device": "cuda:0",
   "dtype": "float16",
   "reason": "device_unavailable",
-  "detail": "CUDA device cuda:0 is not available"
+  "detail": "CUDA device cuda:0 is not available",
+  "tokenization": {
+    "max_length": 512,
+    "truncate": true
+  },
+  "batching": {
+    "max_batch_size": 128,
+    "max_batch_tokens": 8192,
+    "batch_timeout_ms": 2,
+    "max_batch_queue_size": 1024,
+    "batch_request_timeout_ms": 5000
+  }
 }
 ```
 
@@ -324,6 +346,27 @@ The harness profile captures:
 - input shape (`--inputs-per-request`, `--input-token-count`)
 - warmup count
 - batching settings (`MAX_BATCH_SIZE`, `MAX_BATCH_TOKENS`, `BATCH_TIMEOUT_MS`, `MAX_BATCH_QUEUE_SIZE`, `BATCH_REQUEST_TIMEOUT_MS`)
+
+## Benchmark Harness
+
+Run the repeatable benchmark harness against a live server:
+
+```bash
+make bench-10k BENCH_10K_ARGS="--json"
+```
+
+The benchmark profile captures:
+
+- hardware identifier
+- label (`batched` or `no_batching`)
+- model and revision
+- device and dtype
+- tokenization settings (`MAX_LENGTH`, `TRUNCATE`)
+- batching settings
+- total texts, request shape, concurrency, timeout, and warmup policy
+- whether the reported run used warm cache, warm model, and warm container
+
+The fixed report format and comparison method live in `BENCHMARK.md`.
 
 ## Install
 
