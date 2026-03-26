@@ -42,6 +42,19 @@ class HealthResponse(BaseModel):
     status: Literal["ok"]
 
 
+class TokenizationSettingsInfo(BaseModel):
+    max_length: int
+    truncate: bool
+
+
+class BatchingSettingsInfo(BaseModel):
+    max_batch_size: int
+    max_batch_tokens: int
+    batch_timeout_ms: int
+    max_batch_queue_size: int
+    batch_request_timeout_ms: int
+
+
 class ReadyResponse(BaseModel):
     status: Literal["ready"]
     mode: Literal["model"]
@@ -49,6 +62,8 @@ class ReadyResponse(BaseModel):
     revision: str
     device: str
     dtype: str
+    tokenization: TokenizationSettingsInfo
+    batching: BatchingSettingsInfo
 
 
 class NotReadyResponse(BaseModel):
@@ -60,3 +75,5 @@ class NotReadyResponse(BaseModel):
     dtype: str
     reason: ReadyReason
     detail: str
+    tokenization: TokenizationSettingsInfo
+    batching: BatchingSettingsInfo

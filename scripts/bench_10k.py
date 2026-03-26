@@ -6,10 +6,13 @@ import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from time import perf_counter
-from typing import Any
+from typing import Any, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from transformers import AutoTokenizer
 
 DEFAULT_EMBED_URL = "http://127.0.0.1:8000/embed"
 DEFAULT_HARDWARE_ID = "local-dev"
@@ -148,6 +151,45 @@ class BenchmarkResult:
         return payload
 
 
+class _ResponseLike(Protocol):
+    status_code: int
+
+    def json(self) -> Any: ...
+
+
+class _HttpClientLike(Protocol):
+    async def get(self, url: str, *, timeout: float) -> _ResponseLike: ...
+
+    async def post(
+        self,
+        url: str,
+        *,
+        json: dict[str, Any],
+        timeout: float,
+    ) -> _ResponseLike: ...
+
+
+@dataclass(frozen=True)
+class SyntheticInputFactory:
+    stable_tokens: tuple[str, ...]
+    input_token_count: int
+    inputs_per_request: int
+
+    def build_inputs(self, *, request_index: int) -> list[str]:
+        inputs: list[str] = []
+        token_count = len(self.stable_tokens)
+
+        for item_index in range(self.inputs_per_request):
+            offset = (request_index * self.inputs_per_request + item_index) % token_count
+            tokens = [
+                self.stable_tokens[(offset + token_index) % token_count]
+                for token_index in range(self.input_token_count)
+            ]
+            inputs.append(" ".join(tokens))
+
+        return inputs
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -247,15 +289,166 @@ def _build_profile(args: argparse.Namespace) -> BenchmarkProfile:
     )
 
 
-def _build_inputs(*, request_index: int, profile: BenchmarkProfile) -> list[str]:
-    inputs: list[str] = []
-    for item_index in range(profile.inputs_per_request):
-        tokens = [
-            f"tok_{request_index}_{item_index}_{token_index}"
-            for token_index in range(profile.input_token_count)
-        ]
-        inputs.append(" ".join(tokens))
-    return inputs
+@lru_cache(maxsize=8)
+def _load_input_tokenizer(model_id: str, revision: str) -> Any:
+    return AutoTokenizer.from_pretrained(model_id, revision=revision)
+
+
+def _derive_ready_url(embed_url: str) -> str:
+    parsed = urlsplit(embed_url)
+    segments = [segment for segment in parsed.path.split("/") if segment]
+
+    if segments and segments[-1] == "embed":
+        segments[-1] = "readyz"
+    else:
+        segments.append("readyz")
+
+    ready_path = "/" + "/".join(segments) if segments else "/readyz"
+    return urlunsplit((parsed.scheme, parsed.netloc, ready_path, "", ""))
+
+
+def _stable_token_pool(tokenizer: Any) -> tuple[str, ...]:
+    stable_tokens: list[str] = []
+
+    for token, token_id in sorted(tokenizer.get_vocab().items(), key=lambda item: item[1]):
+        if token.startswith("##"):
+            continue
+
+        decoded = tokenizer.decode([token_id], clean_up_tokenization_spaces=False).strip()
+        if not decoded.isalpha() or not decoded.islower():
+            continue
+
+        encoded = tokenizer(decoded, add_special_tokens=False)["input_ids"]
+        if encoded == [token_id]:
+            stable_tokens.append(decoded)
+
+    if len(stable_tokens) < 8:
+        msg = "tokenizer does not expose enough stable single-token text candidates"
+        raise BenchmarkOperationalError(msg)
+
+    return tuple(stable_tokens)
+
+
+def _build_input_factory(profile: BenchmarkProfile) -> SyntheticInputFactory:
+    try:
+        tokenizer = _load_input_tokenizer(profile.model_id, profile.model_revision)
+        stable_tokens = _stable_token_pool(tokenizer)
+    except BenchmarkOperationalError:
+        raise
+    except Exception as exc:
+        msg = f"failed to initialize tokenizer-stable inputs: {exc}"
+        raise BenchmarkOperationalError(msg) from exc
+
+    factory = SyntheticInputFactory(
+        stable_tokens=stable_tokens,
+        input_token_count=profile.input_token_count,
+        inputs_per_request=profile.inputs_per_request,
+    )
+
+    probe_inputs = factory.build_inputs(request_index=0)
+    for probe_input in probe_inputs:
+        actual_token_count = len(tokenizer(probe_input, add_special_tokens=False)["input_ids"])
+        if actual_token_count != profile.input_token_count:
+            msg = (
+                "tokenizer-stable input generation mismatch: "
+                f"expected {profile.input_token_count}, got {actual_token_count}"
+            )
+            raise BenchmarkOperationalError(msg)
+
+    return factory
+
+
+def _parse_ready_response(
+    payload: Any,
+    *,
+    profile: BenchmarkProfile,
+) -> None:
+    if not isinstance(payload, dict):
+        msg = "readyz payload is not an object"
+        raise BenchmarkOperationalError(msg)
+
+    if payload.get("status") != "ready":
+        msg = "readyz payload missing ready status"
+        raise BenchmarkOperationalError(msg)
+
+    tokenization = payload.get("tokenization")
+    batching = payload.get("batching")
+    if not isinstance(tokenization, dict):
+        msg = "readyz payload missing tokenization settings"
+        raise BenchmarkOperationalError(msg)
+    if not isinstance(batching, dict):
+        msg = "readyz payload missing batching settings"
+        raise BenchmarkOperationalError(msg)
+
+    checks: list[tuple[str, Any, Any]] = [
+        ("model", payload.get("model"), profile.model_id),
+        ("revision", payload.get("revision"), profile.model_revision),
+        ("device", payload.get("device"), profile.device),
+        ("dtype", payload.get("dtype"), profile.dtype),
+        ("tokenization.max_length", tokenization.get("max_length"), profile.max_length),
+        ("tokenization.truncate", tokenization.get("truncate"), profile.truncate),
+        ("batching.max_batch_size", batching.get("max_batch_size"), profile.max_batch_size),
+        ("batching.max_batch_tokens", batching.get("max_batch_tokens"), profile.max_batch_tokens),
+        ("batching.batch_timeout_ms", batching.get("batch_timeout_ms"), profile.batch_timeout_ms),
+        (
+            "batching.max_batch_queue_size",
+            batching.get("max_batch_queue_size"),
+            profile.max_batch_queue_size,
+        ),
+        (
+            "batching.batch_request_timeout_ms",
+            batching.get("batch_request_timeout_ms"),
+            profile.batch_request_timeout_ms,
+        ),
+    ]
+
+    for field_name, actual, expected in checks:
+        if actual != expected:
+            msg = f"readyz {field_name} mismatch: expected {expected}, got {actual}"
+            raise BenchmarkOperationalError(msg)
+
+
+async def _verify_server_configuration(
+    *,
+    client: _HttpClientLike,
+    profile: BenchmarkProfile,
+) -> None:
+    ready_url = _derive_ready_url(profile.embed_url)
+
+    try:
+        response = await client.get(ready_url, timeout=profile.timeout_seconds)
+    except httpx.TimeoutException as exc:
+        msg = f"readyz request timed out at {ready_url}"
+        raise BenchmarkOperationalError(msg) from exc
+    except httpx.HTTPError as exc:
+        msg = f"readyz request failed at {ready_url}: {exc}"
+        raise BenchmarkOperationalError(msg) from exc
+
+    if response.status_code != 200:
+        detail = f"HTTP {response.status_code}"
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if isinstance(payload, dict):
+            reason = payload.get("reason")
+            message = payload.get("detail")
+            if isinstance(reason, str) and isinstance(message, str):
+                detail = f"{reason}: {message}"
+            elif isinstance(message, str):
+                detail = message
+
+        msg = f"server readiness check failed at {ready_url}: {detail}"
+        raise BenchmarkOperationalError(msg)
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        msg = "readyz response body is not valid JSON"
+        raise BenchmarkOperationalError(msg) from exc
+
+    _parse_ready_response(payload, profile=profile)
 
 
 def _parse_embed_response(
@@ -285,10 +478,7 @@ def _parse_embed_response(
         msg = f"response model mismatch: expected {expected_model_id}, got {model}"
         raise BenchmarkOperationalError(msg)
     if revision != expected_model_revision:
-        msg = (
-            "response revision mismatch: "
-            f"expected {expected_model_revision}, got {revision}"
-        )
+        msg = f"response revision mismatch: expected {expected_model_revision}, got {revision}"
         raise BenchmarkOperationalError(msg)
     if not isinstance(dim, int) or dim < 1:
         msg = "response payload missing valid integer dim"
@@ -321,11 +511,12 @@ def _parse_embed_response(
 
 async def _issue_request(
     *,
-    client: httpx.AsyncClient,
+    client: _HttpClientLike,
     profile: BenchmarkProfile,
     request_index: int,
+    input_factory: SyntheticInputFactory,
 ) -> RequestOutcome:
-    inputs = _build_inputs(request_index=request_index, profile=profile)
+    inputs = input_factory.build_inputs(request_index=request_index)
     started_at = perf_counter()
 
     try:
@@ -465,12 +656,16 @@ async def run_benchmark(profile: BenchmarkProfile) -> BenchmarkResult:
     semaphore = asyncio.Semaphore(profile.concurrency)
 
     try:
+        input_factory = _build_input_factory(profile)
         async with httpx.AsyncClient(limits=limits) as client:
+            await _verify_server_configuration(client=client, profile=profile)
+
             for request_index in range(profile.warmup_requests):
                 outcome = await _issue_request(
                     client=client,
                     profile=profile,
                     request_index=request_index,
+                    input_factory=input_factory,
                 )
                 if not outcome.success:
                     msg = f"warmup request {request_index} failed with {_format_outcome(outcome)}"
@@ -482,6 +677,7 @@ async def run_benchmark(profile: BenchmarkProfile) -> BenchmarkResult:
                         client=client,
                         profile=profile,
                         request_index=request_index + profile.warmup_requests,
+                        input_factory=input_factory,
                     )
 
             started_at = perf_counter()

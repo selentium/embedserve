@@ -59,6 +59,17 @@ def test_readyz_returns_model_runtime_details(client: TestClient) -> None:
         "revision": "826711e54e001c83835913827a843d8dd0a1def9",
         "device": "cpu",
         "dtype": "float32",
+        "tokenization": {
+            "max_length": 512,
+            "truncate": True,
+        },
+        "batching": {
+            "max_batch_size": 128,
+            "max_batch_tokens": 8192,
+            "batch_timeout_ms": 2,
+            "max_batch_queue_size": 1024,
+            "batch_request_timeout_ms": 5000,
+        },
     }
     assert response.headers["X-Request-ID"]
 
@@ -84,6 +95,17 @@ def test_readyz_returns_503_when_runtime_initialization_fails() -> None:
         "dtype": "float32",
         "reason": "device_unavailable",
         "detail": "CUDA device cuda:0 is not available",
+        "tokenization": {
+            "max_length": 512,
+            "truncate": True,
+        },
+        "batching": {
+            "max_batch_size": 128,
+            "max_batch_tokens": 8192,
+            "batch_timeout_ms": 2,
+            "max_batch_queue_size": 1024,
+            "batch_request_timeout_ms": 5000,
+        },
     }
 
 

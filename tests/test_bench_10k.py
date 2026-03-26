@@ -25,7 +25,7 @@ class FakeResponse:
 class FakeAsyncClient:
     def __init__(self, sequence: list[Any]) -> None:
         self._sequence = list(sequence)
-        self.calls: list[tuple[str, dict[str, Any], float]] = []
+        self.calls: list[tuple[str, str, Any, float]] = []
 
     async def __aenter__(self) -> FakeAsyncClient:
         return self
@@ -33,8 +33,22 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         return None
 
+    async def get(self, url: str, *, timeout: float) -> FakeResponse:
+        self.calls.append(("GET", url, None, timeout))
+        if not self._sequence:
+            msg = "No more fake responses configured"
+            raise AssertionError(msg)
+
+        next_item = self._sequence.pop(0)
+        if isinstance(next_item, Exception):
+            raise next_item
+        if not isinstance(next_item, FakeResponse):
+            msg = "Configured item must be FakeResponse or Exception"
+            raise AssertionError(msg)
+        return next_item
+
     async def post(self, url: str, *, json: dict[str, Any], timeout: float) -> FakeResponse:
-        self.calls.append((url, json, timeout))
+        self.calls.append(("POST", url, json, timeout))
         if not self._sequence:
             msg = "No more fake responses configured"
             raise AssertionError(msg)
@@ -88,6 +102,28 @@ def _payload_with_metadata(
     }
 
 
+def _ready_payload() -> dict[str, Any]:
+    return {
+        "status": "ready",
+        "mode": "model",
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "revision": "826711e54e001c83835913827a843d8dd0a1def9",
+        "device": "cpu",
+        "dtype": "float32",
+        "tokenization": {
+            "max_length": 512,
+            "truncate": True,
+        },
+        "batching": {
+            "max_batch_size": 128,
+            "max_batch_tokens": 8192,
+            "batch_timeout_ms": 2,
+            "max_batch_queue_size": 1024,
+            "batch_request_timeout_ms": 5000,
+        },
+    }
+
+
 def _profile(
     *,
     total_texts: int = 4,
@@ -119,6 +155,11 @@ def _profile(
         warm_model=True,
         warm_container=True,
     )
+
+
+class FakeInputFactory:
+    def build_inputs(self, *, request_index: int) -> list[str]:
+        return [f"input-{request_index}"]
 
 
 def test_parse_args_defaults_and_overrides() -> None:
@@ -264,15 +305,73 @@ def test_summarize_outcomes_preserves_counts_when_every_request_fails() -> None:
     assert results.invalid_response_count == 1
 
 
+def test_build_input_factory_uses_tokenizer_stable_texts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeTokenizer:
+        def get_vocab(self) -> dict[str, int]:
+            return {
+                "[PAD]": 0,
+                "alpha": 1,
+                "bravo": 2,
+                "charlie": 3,
+                "delta": 4,
+                "echo": 5,
+                "foxtrot": 6,
+                "golf": 7,
+                "hotel": 8,
+                "##tail": 9,
+            }
+
+        def decode(self, token_ids: list[int], clean_up_tokenization_spaces: bool = False) -> str:
+            inverse_vocab = {value: key for key, value in self.get_vocab().items()}
+            return " ".join(inverse_vocab[token_id] for token_id in token_ids)
+
+        def __call__(self, text: str, add_special_tokens: bool = False) -> dict[str, list[int]]:
+            vocab = self.get_vocab()
+            return {"input_ids": [vocab[token] for token in text.split()]}
+
+    monkeypatch.setattr("scripts.bench_10k._load_input_tokenizer", lambda *_: FakeTokenizer())
+
+    factory = bench._build_input_factory(_profile(total_texts=4, warmup_requests=0))
+    inputs = factory.build_inputs(request_index=17)
+
+    assert len(inputs) == 1
+    assert len(inputs[0].split()) == 4
+    assert inputs[0] != factory.build_inputs(request_index=18)[0]
+
+
+def test_verify_server_configuration_rejects_batching_mismatch() -> None:
+    client = FakeAsyncClient(
+        [
+            FakeResponse(
+                200,
+                {
+                    **_ready_payload(),
+                    "batching": {
+                        **_ready_payload()["batching"],
+                        "max_batch_size": 1,
+                    },
+                },
+            )
+        ]
+    )
+
+    with pytest.raises(bench.BenchmarkOperationalError, match="batching.max_batch_size"):
+        asyncio.run(bench._verify_server_configuration(client=client, profile=_profile()))
+
+
 def test_run_benchmark_excludes_warmup_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeAsyncClient(
         [
+            FakeResponse(200, _ready_payload()),
             FakeResponse(200, _payload([[1.0, 2.0]])),
             FakeResponse(200, _payload([[1.0, 2.0]])),
             FakeResponse(200, _payload([[1.0, 2.0]])),
         ]
     )
     monkeypatch.setattr("scripts.bench_10k.httpx.AsyncClient", lambda **_: client)
+    monkeypatch.setattr("scripts.bench_10k._build_input_factory", lambda _: FakeInputFactory())
 
     result = asyncio.run(bench.run_benchmark(_profile(total_texts=2, warmup_requests=1)))
 
@@ -280,14 +379,20 @@ def test_run_benchmark_excludes_warmup_requests(monkeypatch: pytest.MonkeyPatch)
     assert result.results is not None
     assert result.results.successful_requests == 2
     assert result.results.successful_texts == 2
-    assert len(client.calls) == 3
+    assert len(client.calls) == 4
 
 
 def test_run_benchmark_returns_operational_failure_when_warmup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = FakeAsyncClient([FakeResponse(503, {"detail": "queue full"})])
+    client = FakeAsyncClient(
+        [
+            FakeResponse(200, _ready_payload()),
+            FakeResponse(503, {"detail": "queue full"}),
+        ]
+    )
     monkeypatch.setattr("scripts.bench_10k.httpx.AsyncClient", lambda **_: client)
+    monkeypatch.setattr("scripts.bench_10k._build_input_factory", lambda _: FakeInputFactory())
 
     result = asyncio.run(bench.run_benchmark(_profile(total_texts=2, warmup_requests=1)))
 
@@ -301,11 +406,13 @@ def test_run_benchmark_preserves_results_when_measured_requests_all_fail(
 ) -> None:
     client = FakeAsyncClient(
         [
+            FakeResponse(200, _ready_payload()),
             FakeResponse(503, {"detail": "queue full"}),
             httpx.TimeoutException("timed out"),
         ]
     )
     monkeypatch.setattr("scripts.bench_10k.httpx.AsyncClient", lambda **_: client)
+    monkeypatch.setattr("scripts.bench_10k._build_input_factory", lambda _: FakeInputFactory())
 
     result = asyncio.run(bench.run_benchmark(_profile(total_texts=2, warmup_requests=0)))
 
@@ -324,16 +431,18 @@ def test_run_benchmark_rejects_wrong_model_revision(
 ) -> None:
     client = FakeAsyncClient(
         [
+            FakeResponse(200, _ready_payload()),
             FakeResponse(
                 200,
                 _payload_with_metadata(
                     [[1.0, 2.0]],
                     revision="1111111111111111111111111111111111111111",
                 ),
-            )
+            ),
         ]
     )
     monkeypatch.setattr("scripts.bench_10k.httpx.AsyncClient", lambda **_: client)
+    monkeypatch.setattr("scripts.bench_10k._build_input_factory", lambda _: FakeInputFactory())
 
     result = asyncio.run(bench.run_benchmark(_profile(total_texts=1, warmup_requests=0)))
 

@@ -120,7 +120,18 @@ Ready response:
   "model": "sentence-transformers/all-MiniLM-L6-v2",
   "revision": "826711e54e001c83835913827a843d8dd0a1def9",
   "device": "cpu",
-  "dtype": "float32"
+  "dtype": "float32",
+  "tokenization": {
+    "max_length": 512,
+    "truncate": true
+  },
+  "batching": {
+    "max_batch_size": 128,
+    "max_batch_tokens": 8192,
+    "batch_timeout_ms": 2,
+    "max_batch_queue_size": 1024,
+    "batch_request_timeout_ms": 5000
+  }
 }
 ```
 
@@ -135,7 +146,18 @@ Unready response:
   "device": "cuda:0",
   "dtype": "float16",
   "reason": "device_unavailable",
-  "detail": "CUDA device cuda:0 is not available"
+  "detail": "CUDA device cuda:0 is not available",
+  "tokenization": {
+    "max_length": 512,
+    "truncate": true
+  },
+  "batching": {
+    "max_batch_size": 128,
+    "max_batch_tokens": 8192,
+    "batch_timeout_ms": 2,
+    "max_batch_queue_size": 1024,
+    "batch_request_timeout_ms": 5000
+  }
 }
 ```
 
