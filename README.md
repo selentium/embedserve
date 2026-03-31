@@ -401,6 +401,8 @@ The default one-hour profile uses:
 - `LOAD_TEST_METRICS_POLL_INTERVAL_SECONDS=5`
 - `LOAD_TEST_MAX_VRAM_DRIFT_BYTES=268435456`
 
+`LOAD_TEST_MAX_VRAM_DRIFT_BYTES` gates drift in `embedserve_gpu_memory_allocated_bytes`. The harness still reports `embedserve_gpu_memory_reserved_bytes`, but reserved VRAM is diagnostic because PyTorch can retain it in the CUDA cache after peak load.
+
 See `STABILITY.md` for the canonical report format and the documented VRAM drift threshold.
 
 ## Install

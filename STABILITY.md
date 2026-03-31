@@ -39,10 +39,11 @@ make load-test \
 - `embedserve_gpu_memory_allocated_bytes`: start / min / max / end / end-minus-start
 - `embedserve_gpu_memory_reserved_bytes`: start / min / max / end / end-minus-start
 - `process_resident_memory_bytes`: start / max / end
-- VRAM drift threshold: `256 MiB` (`268435456` bytes)
+- VRAM drift threshold for the stability gate (`embedserve_gpu_memory_allocated_bytes`): `256 MiB` (`268435456` bytes)
 
 ### Caveats
 
+- The stability pass/fail gate uses allocated VRAM drift. Reserved VRAM remains in the report as diagnostic telemetry.
 - CUDA reserved memory can remain above the allocation floor because PyTorch caches memory aggressively.
 - CPU-mode runs do not emit GPU memory gauges and should be reported as GPU telemetry not applicable.
 - The milestone acceptance check is based on post-warmup end-minus-start drift, not on a fitted trend line.

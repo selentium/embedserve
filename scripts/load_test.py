@@ -341,7 +341,6 @@ def _evaluate_checks(
     *,
     max_vram_drift_bytes: int,
     gpu_allocated_summary: NumericSeriesSummary | None,
-    gpu_reserved_summary: NumericSeriesSummary | None,
 ) -> tuple[dict[str, bool], list[str]]:
     checks = {
         "all_responses_valid": request_summary.invalid_responses == 0,
@@ -355,10 +354,6 @@ def _evaluate_checks(
         "gpu_allocated_drift_within_threshold": (
             gpu_allocated_summary is None
             or gpu_allocated_summary.end_minus_start <= max_vram_drift_bytes
-        ),
-        "gpu_reserved_drift_within_threshold": (
-            gpu_reserved_summary is None
-            or gpu_reserved_summary.end_minus_start <= max_vram_drift_bytes
         ),
     }
 
@@ -375,8 +370,6 @@ def _evaluate_checks(
         failure_reasons.append("gpu_oom_detected")
     if not checks["gpu_allocated_drift_within_threshold"]:
         failure_reasons.append("gpu_allocated_memory_drift_exceeded_threshold")
-    if not checks["gpu_reserved_drift_within_threshold"]:
-        failure_reasons.append("gpu_reserved_memory_drift_exceeded_threshold")
     return checks, failure_reasons
 
 
@@ -582,7 +575,6 @@ async def run_load_test(config: LoadTestConfig) -> LoadTestResult:
         metrics_deltas,
         max_vram_drift_bytes=config.max_vram_drift_bytes,
         gpu_allocated_summary=gpu_allocated_summary,
-        gpu_reserved_summary=gpu_reserved_summary,
     )
 
     passed = all(checks.values())

@@ -67,7 +67,6 @@ def _result(*, passed: bool = True, exit_code: int = 0) -> load_test.LoadTestRes
             "no_unhandled_exceptions": True,
             "gpu_oom_count_zero": True,
             "gpu_allocated_drift_within_threshold": True,
-            "gpu_reserved_drift_within_threshold": True,
         },
         failure_reasons=[],
     )
@@ -194,13 +193,42 @@ def test_evaluate_checks_fails_on_gpu_drift_and_internal_errors() -> None:
             end=64.0,
             end_minus_start=64.0,
         ),
-        gpu_reserved_summary=None,
     )
 
     assert checks["no_internal_errors"] is False
     assert checks["gpu_allocated_drift_within_threshold"] is False
     assert "internal_errors_detected" in failure_reasons
     assert "gpu_allocated_memory_drift_exceeded_threshold" in failure_reasons
+
+
+def test_evaluate_checks_does_not_fail_on_reserved_memory_growth() -> None:
+    """Treat reserved CUDA memory as diagnostic telemetry rather than a load-test failure gate."""
+    request_summary = load_test.AggregatedResults()
+    request_summary.total_requests = 10
+    request_summary.category_counts["success"] = 10
+
+    checks, failure_reasons = load_test._evaluate_checks(
+        request_summary,
+        {
+            "overload": 0.0,
+            "timeout": 0.0,
+            "internal_error": 0.0,
+            "shutdown": 0.0,
+            "unhandled_exceptions": 0.0,
+            "gpu_oom": 0.0,
+        },
+        max_vram_drift_bytes=32,
+        gpu_allocated_summary=load_test.NumericSeriesSummary(
+            start=0.0,
+            min=0.0,
+            max=16.0,
+            end=16.0,
+            end_minus_start=16.0,
+        ),
+    )
+
+    assert checks["gpu_allocated_drift_within_threshold"] is True
+    assert "gpu_reserved_memory_drift_exceeded_threshold" not in failure_reasons
 
 
 def test_main_supports_json_output(
