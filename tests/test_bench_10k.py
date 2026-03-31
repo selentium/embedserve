@@ -163,6 +163,7 @@ class FakeInputFactory:
 
 
 def test_parse_args_defaults_and_overrides() -> None:
+    """Check benchmark CLI defaults and verify explicit overrides propagate into the parsed profile arguments."""
     defaults = bench.parse_args([])
 
     assert defaults.embed_url == "http://127.0.0.1:8000/embed"
@@ -216,12 +217,14 @@ def test_parse_args_defaults_and_overrides() -> None:
 
 
 def test_parse_args_allows_zero_warmup_requests() -> None:
+    """Allow the zero-warmup edge case so benchmarks can skip warmup traffic entirely when requested."""
     parsed = bench.parse_args(["--warmup-requests", "0"])
 
     assert parsed.warmup_requests == 0
 
 
 def test_build_profile_rejects_non_divisible_total_texts() -> None:
+    """Reject profiles where total texts cannot be evenly partitioned across the configured request width."""
     args = bench.parse_args(["--total-texts", "3", "--inputs-per-request", "2"])
 
     with pytest.raises(ValueError, match="divisible"):
@@ -229,6 +232,7 @@ def test_build_profile_rejects_non_divisible_total_texts() -> None:
 
 
 def test_summarize_outcomes_uses_successes_only_for_latency_and_throughput() -> None:
+    """Compute latency and throughput from successful measured requests only while still counting failures."""
     profile = _profile(total_texts=8, warmup_requests=1, inputs_per_request=2)
     outcomes = [
         bench.RequestOutcome(status_code=200, success=True, latency_ms=10.0),
@@ -266,6 +270,7 @@ def test_summarize_outcomes_uses_successes_only_for_latency_and_throughput() -> 
 
 
 def test_summarize_outcomes_preserves_counts_when_every_request_fails() -> None:
+    """Preserve status and failure counts even when every measured request fails and latency stats are undefined."""
     profile = _profile(total_texts=4, warmup_requests=0, inputs_per_request=1)
     outcomes = [
         bench.RequestOutcome(status_code=503, success=False, latency_ms=None),
@@ -308,6 +313,8 @@ def test_summarize_outcomes_preserves_counts_when_every_request_fails() -> None:
 def test_build_input_factory_uses_tokenizer_stable_texts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Build synthetic inputs from tokenizer-stable vocabulary so token count stays fixed across generated texts."""
+
     class FakeTokenizer:
         def get_vocab(self) -> dict[str, int]:
             return {
@@ -342,6 +349,7 @@ def test_build_input_factory_uses_tokenizer_stable_texts(
 
 
 def test_verify_server_configuration_rejects_batching_mismatch() -> None:
+    """Abort benchmarking when `/readyz` reports batching settings that do not match the requested profile."""
     client = FakeAsyncClient(
         [
             FakeResponse(
@@ -362,6 +370,7 @@ def test_verify_server_configuration_rejects_batching_mismatch() -> None:
 
 
 def test_run_benchmark_excludes_warmup_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exclude warmup calls from measured results while still issuing them before benchmark traffic begins."""
     client = FakeAsyncClient(
         [
             FakeResponse(200, _ready_payload()),
@@ -385,6 +394,7 @@ def test_run_benchmark_excludes_warmup_requests(monkeypatch: pytest.MonkeyPatch)
 def test_run_benchmark_returns_operational_failure_when_warmup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Return an operational failure immediately when a warmup request receives a non-success HTTP response."""
     client = FakeAsyncClient(
         [
             FakeResponse(200, _ready_payload()),
@@ -404,6 +414,7 @@ def test_run_benchmark_returns_operational_failure_when_warmup_fails(
 def test_run_benchmark_preserves_results_when_measured_requests_all_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Keep the measured failure summary when all benchmarked requests fail, then mark the run operationally failed."""
     client = FakeAsyncClient(
         [
             FakeResponse(200, _ready_payload()),
@@ -429,6 +440,7 @@ def test_run_benchmark_preserves_results_when_measured_requests_all_fail(
 def test_run_benchmark_rejects_wrong_model_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Treat a response with the wrong model revision as an invalid measured result and fail the benchmark."""
     client = FakeAsyncClient(
         [
             FakeResponse(200, _ready_payload()),
@@ -460,6 +472,8 @@ def test_main_supports_json_output(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Ensure benchmark `main` emits the expected JSON document for a successful benchmark result."""
+
     async def fake_run(profile: bench.BenchmarkProfile) -> bench.BenchmarkResult:
         return bench.BenchmarkResult(
             exit_code=0,
@@ -496,6 +510,7 @@ def test_main_supports_json_output(
 def test_main_returns_operational_code_for_invalid_profile(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Return exit code 2 with a JSON failure payload when CLI arguments cannot form a valid benchmark profile."""
     exit_code = bench.main(
         [
             "--total-texts",

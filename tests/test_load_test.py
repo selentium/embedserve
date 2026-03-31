@@ -74,6 +74,7 @@ def _result(*, passed: bool = True, exit_code: int = 0) -> load_test.LoadTestRes
 
 
 def test_parse_args_defaults_and_overrides() -> None:
+    """Check CLI parsing keeps default load-test endpoints and limits while honoring explicit overrides."""
     defaults = load_test.parse_args(
         [
             "--hardware-id",
@@ -126,6 +127,7 @@ def test_parse_args_defaults_and_overrides() -> None:
 
 
 def test_parse_metrics_snapshot_supports_gpu_and_cpu_modes() -> None:
+    """Parse metrics snapshots both when GPU metrics exist and when CPU-only runs omit those series."""
     gpu_snapshot = load_test._parse_metrics_snapshot(
         """
 embedserve_request_failures_total{reason="overload"} 1
@@ -161,6 +163,7 @@ process_resident_memory_bytes 4096
 
 
 def test_build_client_limits_reserves_metrics_headroom() -> None:
+    """Reserve one extra HTTP connection so metrics polling cannot starve the main load-test traffic."""
     limits = load_test._build_client_limits(8)
 
     assert limits.max_connections == 9
@@ -168,6 +171,7 @@ def test_build_client_limits_reserves_metrics_headroom() -> None:
 
 
 def test_evaluate_checks_fails_on_gpu_drift_and_internal_errors() -> None:
+    """Flag the run as failed when internal errors occur and GPU memory drift exceeds the configured threshold."""
     request_summary = load_test.AggregatedResults()
     request_summary.total_requests = 10
     request_summary.category_counts["internal_error"] = 1
@@ -202,6 +206,8 @@ def test_evaluate_checks_fails_on_gpu_drift_and_internal_errors() -> None:
 def test_main_supports_json_output(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Ensure `main` serializes a successful load-test result as JSON when `--json` is requested."""
+
     async def fake_run(config: load_test.LoadTestConfig) -> load_test.LoadTestResult:
         assert config.hardware_id == "local-dev"
         return _result()
@@ -230,6 +236,8 @@ def test_main_returns_operational_error_payload(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Ensure operational exceptions surface as exit code 2 with a machine-readable JSON failure payload."""
+
     async def fake_run(config: load_test.LoadTestConfig) -> load_test.LoadTestResult:
         raise load_test.LoadTestOperationalError("metrics_request_failed: timeout")
 

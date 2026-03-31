@@ -189,6 +189,8 @@ def _submit(
 
 
 def test_batcher_flushes_by_max_batch_size() -> None:
+    """Flush a batch as soon as the max batch size is reached and record that flush reason in metrics."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = RecordingEmbedder()
@@ -222,6 +224,8 @@ def test_batcher_flushes_by_max_batch_size() -> None:
 
 
 def test_batcher_enforces_fifo_when_token_cap_blocks_head_fit() -> None:
+    """Preserve FIFO ordering when the token cap prevents later items from being packed ahead of the queue head."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = RecordingEmbedder()
@@ -255,6 +259,8 @@ def test_batcher_enforces_fifo_when_token_cap_blocks_head_fit() -> None:
 
 
 def test_batcher_processes_singleton_when_request_exceeds_token_cap() -> None:
+    """Process an oversized request alone instead of rejecting it when it exceeds the nominal token cap."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = RecordingEmbedder()
@@ -284,6 +290,8 @@ def test_batcher_processes_singleton_when_request_exceeds_token_cap() -> None:
 
 
 def test_batcher_cancellation_prunes_job_before_inference() -> None:
+    """Remove cancelled jobs from the pending queue before inference so only surviving work reaches the embedder."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = RecordingEmbedder()
@@ -312,6 +320,8 @@ def test_batcher_cancellation_prunes_job_before_inference() -> None:
 
 
 def test_batcher_rejects_when_queue_is_full() -> None:
+    """Raise `BatcherQueueFullError` once an in-flight request and the configured queue depth consume all capacity."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = EventBlockingEmbedder()
@@ -345,6 +355,8 @@ def test_batcher_rejects_when_queue_is_full() -> None:
 
 
 def test_batcher_prunes_cancelled_queue_entry_before_reporting_overload() -> None:
+    """Free queue capacity immediately when a queued job is cancelled so a replacement submission can be accepted."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = StartedSleepingEmbedder(sleep_seconds=0.25)
@@ -379,6 +391,8 @@ def test_batcher_prunes_cancelled_queue_entry_before_reporting_overload() -> Non
 
 
 def test_batcher_shutdown_completes_inflight_and_fails_unresolved_queue() -> None:
+    """Let in-flight inference finish during shutdown while failing queued-but-unresolved jobs with shutdown errors."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = EventBlockingEmbedder()
@@ -412,6 +426,8 @@ def test_batcher_shutdown_completes_inflight_and_fails_unresolved_queue() -> Non
 
 
 def test_batcher_shutdown_waits_for_non_stoppable_inflight_inference() -> None:
+    """Wait for non-interruptible in-flight inference to finish instead of force-cancelling the worker on shutdown."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = NonStoppableBlockingEmbedder()
@@ -456,6 +472,8 @@ def test_batcher_shutdown_waits_for_non_stoppable_inflight_inference() -> None:
 
 
 def test_batcher_shutdown_caller_timeout_does_not_cancel_inflight_worker() -> None:
+    """Keep the worker and in-flight job alive even if the caller times out while awaiting shutdown."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = NonStoppableBlockingEmbedder()
@@ -503,6 +521,8 @@ def test_batcher_shutdown_caller_timeout_does_not_cancel_inflight_worker() -> No
 
 
 def test_batcher_shutdown_rejects_queued_jobs_before_inflight_completes() -> None:
+    """Reject queued jobs promptly during shutdown without waiting for the current in-flight batch to finish first."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = EventBlockingEmbedder()
@@ -557,6 +577,8 @@ def test_batcher_shutdown_rejects_queued_jobs_before_inflight_completes() -> Non
 
 
 def test_batcher_shutdown_does_not_block_when_queue_is_full() -> None:
+    """Complete shutdown promptly even when the queue is full, while still resolving queued work as shutdown failures."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = EventBlockingEmbedder()
@@ -601,6 +623,8 @@ def test_batcher_shutdown_does_not_block_when_queue_is_full() -> None:
 
 
 def test_batcher_rejects_entire_batch_when_fan_out_payload_is_malformed() -> None:
+    """Fail every submission in a batch when the embedder returns a malformed fan-out payload for the combined request."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = InvalidFanOutEmbedder()
@@ -629,6 +653,8 @@ def test_batcher_rejects_entire_batch_when_fan_out_payload_is_malformed() -> Non
 
 
 def test_batcher_records_gpu_oom_and_clears_cache() -> None:
+    """Record GPU OOM failures and clear the device cache when inference raises an out-of-memory error."""
+
     async def run() -> None:
         metrics = create_metrics()
         embedder = OOMEmbedder()

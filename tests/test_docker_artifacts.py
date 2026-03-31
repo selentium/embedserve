@@ -17,6 +17,7 @@ def _read_lines(path: Path) -> list[str]:
 
 
 def test_requirements_files_are_exact_pins() -> None:
+    """Ensure generated requirements files use exact pins or pip include directives, never loose specs."""
     requirement_pattern = re.compile(
         r'^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?==[A-Za-z0-9_.+-]+(?: ; sys_platform != "linux")?$'
     )
@@ -37,6 +38,7 @@ def test_requirements_files_are_exact_pins() -> None:
 
 
 def test_dependency_input_files_capture_human_edited_direct_dependencies() -> None:
+    """Verify the editable `.in` files declare the expected direct dependencies and platform overlays."""
     runtime_lines = _read_lines(REPO_ROOT / "requirements.in")
     cpu_linux_lines = _read_lines(REPO_ROOT / "requirements.cpu-linux.in")
     dev_lines = _read_lines(REPO_ROOT / "dev-requirements.in")
@@ -65,6 +67,7 @@ def test_dependency_input_files_capture_human_edited_direct_dependencies() -> No
 
 
 def test_generated_requirements_files_include_pip_compile_header() -> None:
+    """Check each compiled requirements file still carries the `pip-compile` provenance header."""
     for relative_path in (
         "requirements.txt",
         "requirements.cpu-linux.txt",
@@ -76,6 +79,7 @@ def test_generated_requirements_files_include_pip_compile_header() -> None:
 
 
 def test_linux_cuda_requirements_extend_base_runtime_with_cuda_pins() -> None:
+    """Confirm the CUDA overlay extends base requirements with pinned CUDA, Torch, and Triton packages."""
     requirement_pattern = re.compile(
         r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?==[A-Za-z0-9_.+-]+$"
     )
@@ -92,6 +96,7 @@ def test_linux_cuda_requirements_extend_base_runtime_with_cuda_pins() -> None:
 
 
 def test_linux_cpu_requirements_extend_base_runtime_with_cpu_torch_pin() -> None:
+    """Confirm the CPU Linux overlay reuses base requirements and pins the CPU-specific Torch build."""
     requirement_pattern = re.compile(
         r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?==[A-Za-z0-9_.+-]+$"
     )
@@ -105,6 +110,7 @@ def test_linux_cpu_requirements_extend_base_runtime_with_cpu_torch_pin() -> None
 
 
 def test_portable_runtime_requirements_exclude_linux_cuda_only_packages() -> None:
+    """Ensure portable requirements exclude Linux-only CUDA packages and gate Torch behind a non-Linux marker."""
     lines = _read_lines(REPO_ROOT / "requirements.txt")
 
     for requirement in (
@@ -121,6 +127,7 @@ def test_portable_runtime_requirements_exclude_linux_cuda_only_packages() -> Non
 
 
 def test_portable_requirements_filter_script_excludes_cuda_runtime_dependencies() -> None:
+    """Verify the portable filter script strips CUDA runtime deps while rewriting Torch for non-Linux installs."""
     filter_script = (REPO_ROOT / "scripts" / "filter_portable_requirements.py").read_text(
         encoding="utf-8"
     )
@@ -132,6 +139,7 @@ def test_portable_requirements_filter_script_excludes_cuda_runtime_dependencies(
 
 
 def test_torch_overlay_filter_script_keeps_only_torch_requirement() -> None:
+    """Verify the Torch overlay filter keeps only Torch and re-includes the shared base requirements file."""
     filter_script = (REPO_ROOT / "scripts" / "filter_torch_overlay_requirements.py").read_text(
         encoding="utf-8"
     )
@@ -145,6 +153,7 @@ def test_torch_overlay_filter_script_keeps_only_torch_requirement() -> None:
 
 
 def test_cuda_overlay_filter_script_keeps_only_cuda_runtime_dependencies() -> None:
+    """Verify the CUDA overlay filter keeps only CUDA runtime packages plus Torch and Triton."""
     filter_script = (REPO_ROOT / "scripts" / "filter_cuda_overlay_requirements.py").read_text(
         encoding="utf-8"
     )
@@ -159,6 +168,7 @@ def test_cuda_overlay_filter_script_keeps_only_cuda_runtime_dependencies() -> No
 
 
 def test_pyproject_targets_python_310() -> None:
+    """Ensure project tooling stays pinned to Python 3.10 for formatting and type-check configuration."""
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert 'target-version = "py310"' in pyproject
@@ -166,6 +176,7 @@ def test_pyproject_targets_python_310() -> None:
 
 
 def test_dockerfile_uses_cuda_runtime_and_readiness_healthcheck() -> None:
+    """Check the Dockerfile uses the CUDA runtime image and exposes a readiness-based health check."""
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04" in dockerfile
@@ -182,6 +193,7 @@ def test_dockerfile_uses_cuda_runtime_and_readiness_healthcheck() -> None:
 
 
 def test_compose_service_requests_gpu_and_cache_volume() -> None:
+    """Ensure docker-compose requests GPUs and mounts a persistent Hugging Face cache volume."""
     compose = yaml.safe_load((REPO_ROOT / "docker" / "docker-compose.yml").read_text("utf-8"))
 
     service = compose["services"]["embedserve"]
@@ -198,6 +210,7 @@ def test_compose_service_requests_gpu_and_cache_volume() -> None:
 
 
 def test_makefile_exposes_docker_wrapper_targets() -> None:
+    """Verify Make exposes the Docker and dependency-management wrappers, including Torch variant selection."""
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
     for target in (
@@ -263,6 +276,7 @@ def test_makefile_exposes_docker_wrapper_targets() -> None:
 
 
 def test_dockerignore_and_env_example_capture_local_docker_contract() -> None:
+    """Check local Docker defaults ignore secrets and tests while leaving device choice unset in `.env.example`."""
     dockerignore = _read_lines(REPO_ROOT / ".dockerignore")
     env_example = _read_lines(REPO_ROOT / ".env.example")
 

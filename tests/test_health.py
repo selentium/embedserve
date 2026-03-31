@@ -41,6 +41,7 @@ def client() -> Iterator[TestClient]:
 
 
 def test_healthz_returns_ok(client: TestClient) -> None:
+    """Verify the liveness endpoint returns `ok` and always includes a request identifier header."""
     response = client.get("/healthz")
 
     assert response.status_code == 200
@@ -49,6 +50,7 @@ def test_healthz_returns_ok(client: TestClient) -> None:
 
 
 def test_readyz_returns_model_runtime_details(client: TestClient) -> None:
+    """Verify readiness exposes model, device, tokenization, and batching metadata for a ready runtime."""
     response = client.get("/readyz")
 
     assert response.status_code == 200
@@ -75,6 +77,8 @@ def test_readyz_returns_model_runtime_details(client: TestClient) -> None:
 
 
 def test_readyz_returns_503_when_runtime_initialization_fails() -> None:
+    """Return a structured 503 readiness payload when runtime initialization fails with a known reason."""
+
     def failing_initializer(settings: Settings) -> RuntimeState:
         raise RuntimeInitializationError(
             "device_unavailable",
@@ -110,6 +114,7 @@ def test_readyz_returns_503_when_runtime_initialization_fails() -> None:
 
 
 def test_readyz_openapi_documents_503_response() -> None:
+    """Ensure the OpenAPI schema advertises the readiness endpoint's 503 failure response."""
     with TestClient(create_app(runtime_initializer=_ready_initializer)) as client:
         response = client.get("/openapi.json")
 
@@ -118,6 +123,7 @@ def test_readyz_openapi_documents_503_response() -> None:
 
 
 def test_initialize_runtime_wraps_warmup_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wrap unexpected warmup embed failures as `warmup_failed` during runtime initialization."""
     settings = Settings()
 
     class FailingWarmupEmbedder:
@@ -142,6 +148,7 @@ def test_initialize_runtime_wraps_warmup_failures(monkeypatch: pytest.MonkeyPatc
 def test_initialize_runtime_preserves_tokenizer_incompatibility(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Preserve tokenizer compatibility errors instead of rewriting them as generic warmup failures."""
     settings = Settings()
 
     class IncompatibleEmbedder:
@@ -167,6 +174,7 @@ def test_initialize_runtime_preserves_tokenizer_incompatibility(
 
 
 def test_unready_runtime_builder_shape() -> None:
+    """Ensure the unready runtime helper returns failure metadata while leaving the embedder unset."""
     runtime = make_unready_runtime(
         model_id="model-id",
         revision="1" * 40,
@@ -183,6 +191,7 @@ def test_unready_runtime_builder_shape() -> None:
 
 
 def test_resolve_device_rejects_unavailable_cuda() -> None:
+    """Reject CUDA device selection when the requested accelerator is not available at startup."""
     with pytest.raises(RuntimeInitializationError) as exc_info:
         _resolve_device(FakeTorch(cuda=FakeCuda(available=False)), "cuda:0")
 
@@ -190,6 +199,7 @@ def test_resolve_device_rejects_unavailable_cuda() -> None:
 
 
 def test_validate_dtype_support_rejects_cpu_float16() -> None:
+    """Reject the CPU `float16` edge case, which the runtime does not support for embedding inference."""
     with pytest.raises(RuntimeInitializationError) as exc_info:
         _validate_dtype_support(FakeTorch(), device="cpu", dtype="float16")
 

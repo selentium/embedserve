@@ -110,6 +110,7 @@ def _create_fake_python(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_make_worktree_create_bootstraps_and_copies_env(tmp_path: Path) -> None:
+    """Ensure `make worktree-create` bootstraps tooling, copies `.env`, and checks out the new branch at the same HEAD."""
     repo = _init_repo(tmp_path)
     fake_python, log_path = _create_fake_python(tmp_path)
     (repo / ".env").write_text("MODEL_ID=local\n", encoding="utf-8")
@@ -136,6 +137,7 @@ def test_make_worktree_create_bootstraps_and_copies_env(tmp_path: Path) -> None:
 
 
 def test_make_worktree_create_fails_when_branch_exists(tmp_path: Path) -> None:
+    """Reject worktree creation when the requested branch already exists, avoiding accidental branch reuse."""
     repo = _init_repo(tmp_path)
     _run(["git", "branch", "agent"], cwd=repo)
 
@@ -146,6 +148,7 @@ def test_make_worktree_create_fails_when_branch_exists(tmp_path: Path) -> None:
 
 
 def test_script_create_rolls_back_worktree_when_setup_fails(tmp_path: Path) -> None:
+    """Roll back both the worktree and branch when the post-create setup command fails partway through."""
     repo = _init_repo(tmp_path)
     worktree = tmp_path / "embedserve-agent"
 
@@ -169,6 +172,7 @@ def test_script_create_rolls_back_worktree_when_setup_fails(tmp_path: Path) -> N
 
 
 def test_script_create_does_not_overwrite_existing_worktree_env(tmp_path: Path) -> None:
+    """Copy the tracked `.env` into the worktree without leaking later uncommitted local-only edits."""
     repo = _init_repo(tmp_path)
     (repo / ".env").write_text("MODEL_ID=tracked\n", encoding="utf-8")
     _run(["git", "add", ".env"], cwd=repo)
@@ -192,6 +196,7 @@ def test_script_create_does_not_overwrite_existing_worktree_env(tmp_path: Path) 
 
 
 def test_make_worktree_remove_rejects_dirty_worktree_without_force(tmp_path: Path) -> None:
+    """Refuse to remove a dirty worktree unless `FORCE=1` is provided, preserving uncommitted changes."""
     repo = _init_repo(tmp_path)
     _make(repo, "worktree-create", "WORKTREE=agent", "SETUP=0", "COPY_ENV=0")
     worktree = tmp_path / "embedserve-agent"
@@ -205,6 +210,7 @@ def test_make_worktree_remove_rejects_dirty_worktree_without_force(tmp_path: Pat
 
 
 def test_make_worktree_remove_force_can_delete_branch(tmp_path: Path) -> None:
+    """Allow forced removal to delete both a dirty worktree and its branch when explicitly requested."""
     repo = _init_repo(tmp_path)
     _make(repo, "worktree-create", "WORKTREE=agent", "SETUP=0", "COPY_ENV=0")
     worktree = tmp_path / "embedserve-agent"

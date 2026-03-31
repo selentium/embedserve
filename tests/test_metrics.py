@@ -108,6 +108,7 @@ def _gpu_ready_initializer(settings: Settings) -> RuntimeState:
 
 
 def test_metrics_exposes_ready_runtime_state() -> None:
+    """Expose ready-state, batching, and failure counters on `/metrics` while omitting GPU-only series on CPU."""
     with TestClient(create_app(runtime_initializer=_ready_initializer)) as client:
         response = client.get("/metrics")
 
@@ -144,6 +145,8 @@ def test_metrics_exposes_ready_runtime_state() -> None:
 
 
 def test_metrics_exposes_unready_runtime_state() -> None:
+    """Report readiness as `0` on `/metrics` when application startup leaves the runtime unready."""
+
     def failing_initializer(settings: Settings) -> RuntimeState:
         raise RuntimeInitializationError("model_load_failed", "weights missing")
 
@@ -155,6 +158,8 @@ def test_metrics_exposes_unready_runtime_state() -> None:
 
 
 def test_metrics_supports_in_process_asgi_transport() -> None:
+    """Allow `/metrics` to be queried through in-process ASGI transport without a live server socket."""
+
     async def run_request() -> tuple[int, str]:
         app = create_app(runtime_initializer=_ready_initializer)
         async with (
@@ -175,6 +180,8 @@ def test_metrics_supports_in_process_asgi_transport() -> None:
 
 
 def test_metrics_refresh_gpu_memory_from_runtime() -> None:
+    """Refresh GPU memory gauges from the live runtime before serving metrics for CUDA-backed deployments."""
+
     async def run_request() -> tuple[int, str]:
         app = create_app(runtime_initializer=_gpu_ready_initializer)
         async with (
@@ -196,6 +203,8 @@ def test_metrics_refresh_gpu_memory_from_runtime() -> None:
 
 
 def test_unhandled_exceptions_increment_failure_metrics() -> None:
+    """Increment both unhandled-exception and internal-error counters when a route raises unexpectedly."""
+
     async def run_request() -> tuple[float | None, float | None]:
         app = create_app(runtime_initializer=_ready_initializer)
 
@@ -228,6 +237,8 @@ def test_unhandled_exceptions_increment_failure_metrics() -> None:
 
 
 def test_cancelled_requests_do_not_record_http_500_metrics() -> None:
+    """Avoid emitting synthetic HTTP 500 metrics when the client disconnects and the request is cancelled."""
+
     async def run_request() -> float | None:
         app = create_app(runtime_initializer=_ready_initializer)
 
@@ -293,6 +304,8 @@ def test_cancelled_requests_do_not_record_http_500_metrics() -> None:
 
 
 def test_unmatched_routes_use_a_stable_metrics_label() -> None:
+    """Collapse 404s for arbitrary paths under a stable `unmatched` route label instead of raw URLs."""
+
     async def run_requests() -> tuple[float | None, float | None, float | None]:
         app = create_app(runtime_initializer=_ready_initializer)
         async with app.router.lifespan_context(app):

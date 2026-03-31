@@ -77,6 +77,7 @@ def _config() -> verifier.VerificationConfig:
 def test_run_verification_passes_when_repeated_outputs_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Pass when repeated embed responses are identical, yielding zero diff and perfect cosine similarity."""
     client = FakeClient(
         [
             FakeResponse(200, _payload([[1.0, 2.0], [3.0, 4.0]])),
@@ -97,6 +98,7 @@ def test_run_verification_passes_when_repeated_outputs_match(
 def test_run_verification_fails_when_threshold_is_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Fail verification when any embedding coordinate exceeds the configured max absolute difference threshold."""
     client = FakeClient(
         [
             FakeResponse(200, _payload([[1.0, 0.0], [0.0, 1.0]])),
@@ -126,6 +128,7 @@ def test_run_verification_fails_when_threshold_is_exceeded(
 def test_run_verification_fails_when_cosine_threshold_is_not_met(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Fail verification when repeated outputs drift directionally enough to miss the cosine similarity floor."""
     client = FakeClient(
         [
             FakeResponse(200, _payload([[1.0, 0.0], [0.0, 1.0]])),
@@ -155,6 +158,7 @@ def test_run_verification_fails_when_cosine_threshold_is_not_met(
 def test_run_verification_returns_operational_failure_on_non_200(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Treat non-200 HTTP responses as operational failures instead of numerical determinism failures."""
     client = FakeClient([FakeResponse(500, {"detail": "oops"})])
     monkeypatch.setattr("scripts.verify_determinism.httpx.Client", lambda: client)
 
@@ -168,6 +172,7 @@ def test_run_verification_returns_operational_failure_on_non_200(
 def test_run_verification_returns_operational_failure_on_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Return an operational failure when the embed request times out before a response arrives."""
     client = FakeClient([httpx.TimeoutException("timeout")])
     monkeypatch.setattr("scripts.verify_determinism.httpx.Client", lambda: client)
 
@@ -182,6 +187,7 @@ def test_run_verification_returns_operational_failure_on_timeout(
 def test_run_verification_returns_operational_failure_on_shape_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Return an operational failure when repeated responses change embedding dimensionality between runs."""
     client = FakeClient(
         [
             FakeResponse(200, _payload([[1.0, 2.0], [3.0, 4.0]])),
@@ -201,6 +207,7 @@ def test_run_verification_returns_operational_failure_on_shape_mismatch(
 def test_run_verification_returns_operational_failure_on_malformed_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Return an operational failure when the response payload shape is malformed, such as non-list `data`."""
     client = FakeClient([FakeResponse(200, {"dim": 2, "data": "bad"})])
     monkeypatch.setattr("scripts.verify_determinism.httpx.Client", lambda: client)
 
@@ -212,6 +219,7 @@ def test_run_verification_returns_operational_failure_on_malformed_payload(
 
 
 def test_parse_args_defaults_and_overrides() -> None:
+    """Check CLI parsing keeps documented defaults and applies explicit overrides for thresholds and JSON output."""
     defaults = verifier.parse_args([])
 
     assert defaults.url == "http://127.0.0.1:8000/embed"
@@ -251,6 +259,7 @@ def test_main_supports_inputs_file_and_json_output(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Ensure `main` loads newline-delimited inputs from disk and emits the JSON summary payload."""
     inputs_path = tmp_path / "inputs.txt"
     inputs_path.write_text("alpha\nbeta\n", encoding="utf-8")
 
@@ -280,6 +289,7 @@ def test_main_returns_operational_code_for_invalid_inputs_file(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Return the operational exit code when the inputs file is not the expected newline-delimited text format."""
     inputs_path = tmp_path / "inputs.json"
     inputs_path.write_text('{"inputs": ["alpha"]}', encoding="utf-8")
 

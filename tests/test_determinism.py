@@ -55,6 +55,7 @@ class FakeTorchNoWarnOnly:
 def test_apply_determinism_policy_sets_seed_and_torch_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Seed Python and Torch state while enabling the deterministic CuDNN and algorithm flags when available."""
     random_calls: list[int] = []
     monkeypatch.setattr("app.determinism.random.seed", lambda seed: random_calls.append(seed))
 
@@ -74,6 +75,7 @@ def test_apply_determinism_policy_sets_seed_and_torch_flags(
 
 
 def test_apply_determinism_policy_gracefully_handles_missing_optional_apis() -> None:
+    """Treat missing Torch determinism hooks as unsupported instead of crashing the policy application."""
     state = apply_determinism_policy(torch_module=SimpleNamespace())
 
     assert state.mode == "numerical_stability"
@@ -82,6 +84,7 @@ def test_apply_determinism_policy_gracefully_handles_missing_optional_apis() -> 
 
 
 def test_apply_determinism_policy_supports_older_torch_signature() -> None:
+    """Support older Torch versions whose `use_deterministic_algorithms` API lacks the `warn_only` parameter."""
     torch_module = FakeTorchNoWarnOnly()
 
     state = apply_determinism_policy(torch_module=torch_module)
@@ -91,6 +94,7 @@ def test_apply_determinism_policy_supports_older_torch_signature() -> None:
 
 
 def test_apply_determinism_policy_treats_algorithm_errors_as_unsupported() -> None:
+    """Downgrade runtime errors from deterministic algorithm enablement to an `unsupported` capability state."""
     torch_module = FakeTorch(algorithm_mode="fail")
 
     state = apply_determinism_policy(torch_module=torch_module)

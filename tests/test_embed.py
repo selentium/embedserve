@@ -77,6 +77,7 @@ def client() -> Iterator[TestClient]:
 
 
 def test_embed_single_input_returns_model_response(client: TestClient) -> None:
+    """Return model metadata, token usage, and an embedding item for the simplest single-input request."""
     response = client.post("/embed", json={"inputs": ["first text"]})
 
     assert response.status_code == 200
@@ -93,6 +94,7 @@ def test_embed_single_input_returns_model_response(client: TestClient) -> None:
 
 
 def test_embed_multi_input_preserves_order_and_is_deterministic(client: TestClient) -> None:
+    """Preserve input ordering and return stable embeddings across repeated identical multi-input requests."""
     request_payload = {"inputs": ["alpha beta", "gamma", "delta epsilon zeta"]}
 
     first_response = client.post("/embed", json=request_payload)
@@ -110,6 +112,7 @@ def test_embed_multi_input_preserves_order_and_is_deterministic(client: TestClie
 
 
 def test_embed_accepts_surrounding_whitespace_without_trimming() -> None:
+    """Treat surrounding whitespace as significant input instead of trimming it away before embedding."""
     app = create_app(
         runtime_initializer=_ready_initializer_factory(
             token_map={
@@ -132,6 +135,8 @@ def test_embed_accepts_surrounding_whitespace_without_trimming() -> None:
 
 
 def test_embed_supports_in_process_asgi_transport() -> None:
+    """Support posting to `/embed` over in-process ASGI transport without starting an external server."""
+
     async def run_request() -> tuple[int, str]:
         app = create_app(runtime_initializer=_ready_initializer_factory())
         async with (
@@ -170,6 +175,7 @@ def test_embed_validation_failures_return_fastapi_422_when_runtime_is_unready(
     payload: dict[str, object],
     expected_loc: list[str],
 ) -> None:
+    """Run request-shape validation before readiness checks so malformed payloads still get FastAPI 422 responses."""
     app = create_app(runtime_initializer=_unready_initializer)
 
     with TestClient(app) as client:
@@ -185,6 +191,7 @@ def test_embed_validation_failures_return_fastapi_422_when_runtime_is_unready(
 def test_embed_respects_max_inputs_per_request_before_readiness_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Enforce the max-inputs limit before surfacing runtime unready errors, rejecting oversized payloads with 422."""
     monkeypatch.setenv("MAX_INPUTS_PER_REQUEST", "2")
     app = create_app(runtime_initializer=_unready_initializer)
 
@@ -199,6 +206,7 @@ def test_embed_respects_max_inputs_per_request_before_readiness_check(
 
 
 def test_embed_returns_503_when_runtime_is_unready() -> None:
+    """Return a standardized 503 response for otherwise valid embed requests when the runtime is not ready."""
     app = create_app(runtime_initializer=_unready_initializer)
 
     with TestClient(app) as client:
@@ -210,6 +218,7 @@ def test_embed_returns_503_when_runtime_is_unready() -> None:
 
 
 def test_embed_truncates_when_enabled_and_counts_post_truncation_tokens() -> None:
+    """Count usage after truncation, not before, when long inputs are clipped to the effective max length."""
     app = create_app(
         runtime_initializer=_ready_initializer_factory(
             truncate=True,
@@ -226,6 +235,7 @@ def test_embed_truncates_when_enabled_and_counts_post_truncation_tokens() -> Non
 
 
 def test_embed_rejects_overlength_inputs_when_truncation_is_disabled() -> None:
+    """Reject overlength inputs before model execution when truncation is disabled, avoiding tokenizer padding and forward passes."""
     capture: RuntimeCapture = {}
     app = create_app(
         runtime_initializer=_ready_initializer_factory(
@@ -253,6 +263,7 @@ def test_embed_rejects_overlength_inputs_when_truncation_is_disabled() -> None:
 
 
 def test_embed_normalizes_vectors_by_default() -> None:
+    """Normalize returned embeddings to unit length by default."""
     app = create_app(runtime_initializer=_ready_initializer_factory(normalize_embeddings=True))
 
     with TestClient(app) as client:
@@ -264,6 +275,7 @@ def test_embed_normalizes_vectors_by_default() -> None:
 
 
 def test_embed_can_disable_normalization() -> None:
+    """Allow callers to disable normalization so embedding magnitudes are preserved."""
     app = create_app(runtime_initializer=_ready_initializer_factory(normalize_embeddings=False))
 
     with TestClient(app) as client:
@@ -275,6 +287,7 @@ def test_embed_can_disable_normalization() -> None:
 
 
 def test_embed_output_dtype_affects_returned_precision() -> None:
+    """Reflect the configured output dtype in the returned embedding precision."""
     float32_app = create_app(runtime_initializer=_ready_initializer_factory(output_dtype="float32"))
     float16_app = create_app(runtime_initializer=_ready_initializer_factory(output_dtype="float16"))
 
@@ -290,6 +303,7 @@ def test_embed_output_dtype_affects_returned_precision() -> None:
 
 
 def test_effective_max_length_respects_tokenizer_cap() -> None:
+    """Cap the effective max length to the tokenizer limit unless the tokenizer advertises an oversized sentinel value."""
     assert (
         _resolve_effective_max_length(
             configured_max_length=512,
@@ -307,6 +321,7 @@ def test_effective_max_length_respects_tokenizer_cap() -> None:
 
 
 def test_embed_openapi_documents_503_response() -> None:
+    """Ensure the OpenAPI schema documents all 503 embed failure modes, including queue, timeout, and shutdown cases."""
     app = create_app(runtime_initializer=_ready_initializer_factory())
 
     with TestClient(app) as client:

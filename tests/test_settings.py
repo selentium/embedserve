@@ -7,6 +7,7 @@ from app.settings import Settings
 
 
 def test_settings_accept_new_public_runtime_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure all public runtime settings, including batching and output controls, parse from environment variables."""
     monkeypatch.setenv("MODEL_ID", "sentence-transformers/all-MiniLM-L6-v2")
     monkeypatch.setenv("MODEL_REVISION", "1" * 40)
     monkeypatch.setenv("DEVICE", "cuda:0")
@@ -59,6 +60,7 @@ def test_settings_reject_invalid_runtime_configuration(
     field: str,
     value: str,
 ) -> None:
+    """Reject invalid enum values, malformed revisions, and zero-valued batching limits at settings validation time."""
     monkeypatch.setenv(field, value)
 
     with pytest.raises(ValidationError):

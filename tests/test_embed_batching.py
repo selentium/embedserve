@@ -137,6 +137,8 @@ def _metric_value(metrics_text: str, metric_name: str, *, labels: str | None = N
 
 
 def test_submit_time_preflight_validation_isolated_from_other_requests() -> None:
+    """Ensure one overlength request fails validation without blocking a concurrent valid request from succeeding."""
+
     def initializer(settings: Settings) -> RuntimeState:
         embedder, _, _ = make_fake_embedder(
             model_id=settings.MODEL_ID,
@@ -166,6 +168,7 @@ def test_submit_time_preflight_validation_isolated_from_other_requests() -> None
 def test_embed_queue_saturation_returns_overload_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Return a 503 overload once the batch queue is saturated while allowing earlier queued work to complete."""
     monkeypatch.setenv("MAX_BATCH_SIZE", "1")
     monkeypatch.setenv("MAX_BATCH_QUEUE_SIZE", "1")
     monkeypatch.setenv("BATCH_TIMEOUT_MS", "1000")
@@ -214,6 +217,7 @@ def test_embed_queue_saturation_returns_overload_503(
 
 
 def test_embed_request_timeout_returns_timeout_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Map per-request batch timeouts to a 503 response and increment the timeout-related metrics."""
     monkeypatch.setenv("MAX_BATCH_SIZE", "1")
     monkeypatch.setenv("BATCH_TIMEOUT_MS", "1000")
     monkeypatch.setenv("BATCH_REQUEST_TIMEOUT_MS", "20")
@@ -248,6 +252,8 @@ def test_embed_request_timeout_returns_timeout_503(monkeypatch: pytest.MonkeyPat
 
 
 def test_embed_shutdown_rejection_returns_shutdown_503() -> None:
+    """Return a 503 shutdown response when the batcher has stopped accepting new submissions."""
+
     def initializer(settings: Settings) -> RuntimeState:
         embedder, _, _ = make_fake_embedder(
             model_id=settings.MODEL_ID,
@@ -280,6 +286,8 @@ def test_embed_shutdown_rejection_returns_shutdown_503() -> None:
 
 
 def test_embed_preflight_internal_failure_maps_to_500() -> None:
+    """Map unexpected preflight exceptions to a 500 response and record them as internal request failures."""
+
     def initializer(settings: Settings) -> RuntimeState:
         return _runtime_with_embedder(settings, PreflightFailureEmbedder())
 
@@ -307,6 +315,8 @@ def test_embed_preflight_internal_failure_maps_to_500() -> None:
 
 
 def test_embed_batch_inference_failure_maps_to_500_and_metric() -> None:
+    """Map batch inference crashes to HTTP 500 and increment both batch and request failure metrics."""
+
     def initializer(settings: Settings) -> RuntimeState:
         return _runtime_with_embedder(settings, InferenceFailureEmbedder())
 
@@ -335,6 +345,8 @@ def test_embed_batch_inference_failure_maps_to_500_and_metric() -> None:
 
 
 def test_embed_validation_and_unready_do_not_increment_operational_failure_counter() -> None:
+    """Keep validation 422s and unready 503s out of the operational failure counters reserved for runtime errors."""
+
     async def run() -> tuple[str | None, str | None]:
         app = create_app(runtime_initializer=_runtime_unready)
         async with (
@@ -368,6 +380,7 @@ def test_embed_validation_and_unready_do_not_increment_operational_failure_count
 def test_embed_preserves_fifo_arrival_order_before_preflight_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Preserve FIFO processing even when a later request finishes preflight before the earlier arrival."""
     monkeypatch.setenv("MAX_BATCH_SIZE", "1")
     monkeypatch.setenv("BATCH_TIMEOUT_MS", "1000")
 
@@ -397,6 +410,7 @@ def test_embed_preserves_fifo_arrival_order_before_preflight_completes(
 
 
 def test_embed_does_not_let_preflight_starve_batch_inference_worker() -> None:
+    """Prevent shared preflight threadpool work from starving the batch inference worker under tight executor limits."""
     repo_root = Path(__file__).resolve().parents[1]
     script = textwrap.dedent(
         """
