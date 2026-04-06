@@ -18,7 +18,6 @@ EmbedServe has a small public API surface but several operational guarantees, so
 - `scripts/`: live verification, benchmark, load-test, and helper scripts
 - `docker/`: Dockerfile and Compose workflow
 - `docs/use/`: public user and operator docs
-- `docs/internal/`: milestone notes and internal plans
 
 ## Contributor Expectations
 

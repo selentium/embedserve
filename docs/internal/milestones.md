@@ -139,7 +139,7 @@ Each milestone should leave the repository in a usable state with clear pass/fai
 ### Deliverables
 
 - `scripts/bench_10k.py` sends a configurable number of texts, reports throughput, reports p50, p95, and p99 client-side latency, and records error count and timeout count.
-- Benchmark report in `BENCHMARK.md` or README includes hardware used, model and revision, dtype, batching settings, tokenization settings, concurrency level, and a results table.
+- Benchmark report in `docs/benchmarks/BENCHMARK.md` or README includes hardware used, model and revision, dtype, batching settings, tokenization settings, concurrency level, and a results table.
 - Benchmark method explicitly defines warmup procedure, input corpus shape, and the no-batching comparison mode if throughput deltas are reported.
 
 ### Acceptance checks

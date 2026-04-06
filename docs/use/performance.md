@@ -42,7 +42,7 @@ The benchmark profile captures:
 - total texts, request shape, concurrency, timeout, and warmup policy
 - whether the run used warm cache, warm model, and warm container
 
-Canonical benchmark reporting format lives in [Benchmark Report](../../BENCHMARK.md).
+Canonical benchmark reporting format lives in [Benchmark Report](../benchmarks/BENCHMARK.md).
 
 ## Stability Load Harness
 
@@ -70,7 +70,7 @@ The harness:
 - polls `/metrics` for failure counters, process RSS, and CUDA memory
 - exits `0` on pass, `1` on stability failure, and `2` on operational failure
 
-Canonical stability reporting format lives in [Stability Report](../../STABILITY.md).
+Canonical stability reporting format lives in [Stability Report](../benchmarks/STABILITY.md).
 
 ## Choosing the Right Tool
 

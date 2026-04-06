@@ -26,7 +26,5 @@ This repository keeps user-facing and contributor-facing docs in separate sectio
 
 ## Reference Artifacts
 
-- [Benchmark Report](../BENCHMARK.md)
-- [Stability Report](../STABILITY.md)
-- [Internal Milestones](internal/milestones.md)
-- [Internal Plans](internal/plans/)
+- [Benchmark Report](benchmarks/BENCHMARK.md)
+- [Stability Report](benchmarks/STABILITY.md)

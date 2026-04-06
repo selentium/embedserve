@@ -73,9 +73,8 @@ Contributor docs:
 
 Reference artifacts:
 
-- [Benchmark Report](BENCHMARK.md)
-- [Stability Report](STABILITY.md)
-- [Internal milestone notes](docs/internal/milestones.md)
+- [Benchmark Report](docs/benchmarks/BENCHMARK.md)
+- [Stability Report](docs/benchmarks/STABILITY.md)
 
 ## Contributing
 
