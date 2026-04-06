@@ -1,6 +1,16 @@
 # EmbedServe
 
-EmbedServe is a FastAPI embedding service that runs dynamically batched Hugging Face encoder inference from a pinned model revision.
+Production-oriented embedding inference service designed for high-throughput and efficient GPU utilization.
+
+Built with FastAPI, embedserve uses dynamic batching and asynchronous request handling to maximize performance while maintaining predictable latency. The service includes readiness/liveness probes, Prometheus metrics, and reproducible model loading for reliable operation in production environments.
+
+### Key features
+
+- Dynamic batching for improved throughput under load
+- Deterministic embedding outputs (stable across runs)
+- GPU-optimized inference pipeline
+- Health checks (`/healthz`, `/readyz`) and Prometheus metrics
+- Docker-based deployment for NVIDIA GPU environments
 
 ## What It Guarantees
 
